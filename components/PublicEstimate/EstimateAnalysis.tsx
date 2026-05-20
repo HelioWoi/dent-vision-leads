@@ -55,7 +55,6 @@ const LEVEL_META = {
 const PANEL_OPTIONS = ['Bonnet', 'Guard (Front/Rear)', 'Door/s', 'Roof', 'Boot'] as const;
 const TYPE_OPTIONS = ['PDR Dent', 'Hail Damage'] as const;
 const DISPATCH_TOTAL_SECONDS = 180;
-const CENTER_PERSON_ICON_URL = 'https://wtfstakxspbnghalelby.supabase.co/storage/v1/object/public/media/person.png';
 const normalizePanel = (value: string): string => {
   const lower = value.toLowerCase();
   if (lower.includes('bonnet') || lower.includes('hood')) return 'Bonnet';
@@ -548,7 +547,16 @@ const EstimateAnalysis: React.FC = () => {
                   <div className="relative z-20 w-16 h-16 rounded-full bg-gradient-to-br from-[#5b5dfd] to-[#4f46e5] shadow-[0_0_30px_rgba(79,70,229,0.45)] flex items-center justify-center person-core">
                     <span className="absolute inset-0 rounded-full bg-[#5b5dfd]/30 animate-ping" style={{ animationDuration: '1.6s' }} />
                     <span className="absolute inset-1 rounded-full bg-[#5b5dfd]/35" />
-                    <img src={CENTER_PERSON_ICON_URL} alt="Person" className="relative z-10 w-7 h-7 object-contain" />
+                    <svg
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2"
+                      className="relative z-10 w-7 h-7 text-white"
+                      aria-hidden="true"
+                    >
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M12 11a3 3 0 100-6 3 3 0 000 6zm-7 9a7 7 0 1114 0H5z" />
+                    </svg>
                   </div>
                 </div>
 

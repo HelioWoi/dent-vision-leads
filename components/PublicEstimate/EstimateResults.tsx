@@ -388,11 +388,17 @@ const EstimateResults: React.FC = () => {
             <div className="bg-white rounded-3xl border border-[#e5e7eb] p-5 md:p-6 shadow-sm dv-fade-in">
               <div className="text-center max-w-2xl mx-auto">
                 <div className="w-14 h-14 rounded-full bg-[#fff7ed] border border-[#fed7aa] mx-auto flex items-center justify-center mb-3 dv-icon-glow">
-                  <img
-                    src="https://wtfstakxspbnghalelby.supabase.co/storage/v1/object/public/media/lup.svg"
-                    alt="Inspection"
-                    className="w-7 h-7 object-contain"
-                  />
+                  <svg
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    className="w-7 h-7 text-[#f59e0b]"
+                    aria-hidden="true"
+                  >
+                    <circle cx="11" cy="11" r="6" />
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M20 20l-4.2-4.2" />
+                  </svg>
                 </div>
                 <p className="text-[11px] font-bold tracking-[0.12em] text-[#f59e0b] uppercase mb-1">Inspection recommended</p>
                 <h1 className="text-3xl font-extrabold text-[#111827] leading-tight">A physical inspection may be required</h1>
