@@ -5,6 +5,7 @@ import DarkFooter from './DarkFooter';
 import LiveScanPanelSelector from './LiveScanPanelSelector';
 import LiveScanView from './LiveScanView';
 import LiveScanPauseView from './LiveScanPauseView';
+import { verifyIsCarImage } from '../services/geminiServiceAdapter';
 import { PanelType, VehicleType } from '../types';
 import { runLiveScanAnalysis } from '../features/live-scan/liveScanOrchestrator';
 
@@ -13,6 +14,7 @@ const LOGO_URL = 'https://swcwxzgjwgpvmuiwrugs.supabase.co/storage/v1/object/pub
 const HERO_DESKTOP_IMAGE_URL = 'https://swcwxzgjwgpvmuiwrugs.supabase.co/storage/v1/object/public/media/imgcar6.jpg';
 const UPLOAD_CARD_IMAGE_URL = 'https://swcwxzgjwgpvmuiwrugs.supabase.co/storage/v1/object/public/media/img1..png';
 const ANALYSIS_CARD_IMAGE_URL = 'https://swcwxzgjwgpvmuiwrugs.supabase.co/storage/v1/object/public/media/img2.png';
+const INVALID_IMAGE_FALLBACK_KEY = 'invalidImageValidationFallback';
 
 type PendingConsentAction =
   | { type: 'open-file' }
@@ -112,6 +114,31 @@ const LeadsGenerator: React.FC = () => {
     setLiveScanPermissionError(null);
 
     try {
+      const validationFrame = frames[Math.floor(frames.length / 2)] || frames[0];
+      const validation = await verifyIsCarImage(validationFrame);
+
+      if (!validation.is_car) {
+        sessionStorage.removeItem('estimateData');
+        sessionStorage.removeItem('liveScanDispatchMode');
+        sessionStorage.removeItem('liveScanFullAnalysis');
+        sessionStorage.setItem(
+          INVALID_IMAGE_FALLBACK_KEY,
+          JSON.stringify({
+            source: 'live-scan',
+            reason: 'no_vehicle_detected',
+          })
+        );
+        console.info('[estimate-image-validation]', {
+          validation_status: 'invalid_image',
+          validation_reason: 'no_vehicle_detected',
+          source: 'live-scan',
+          flow: 'public-estimate',
+        });
+        closeLiveScanFlow();
+        window.location.hash = '#/estimate-analysis';
+        return;
+      }
+
       const output = await runLiveScanAnalysis({
         frames,
         liveScanSelectedPanels: selectedPanels,

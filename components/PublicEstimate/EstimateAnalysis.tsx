@@ -54,6 +54,11 @@ interface LiveScanDispatchMode {
   zip?: string;
 }
 
+interface InvalidImageFallbackState {
+  source: 'upload' | 'live-scan';
+  reason?: string;
+}
+
 const LEVEL_META = {
   Shallow: { color: '#22c55e', desc: 'Light surface dent · PDR easy' },
   Medium:  { color: '#f59e0b', desc: 'Moderate depth · PDR possible' },
@@ -63,6 +68,7 @@ const LEVEL_META = {
 const PANEL_OPTIONS = ['Bonnet', 'Guard (Front/Rear)', 'Door/s', 'Roof', 'Boot'] as const;
 const TYPE_OPTIONS = ['PDR Dent', 'Hail Damage'] as const;
 const DISPATCH_TOTAL_SECONDS = 180;
+const INVALID_IMAGE_FALLBACK_KEY = 'invalidImageValidationFallback';
 const normalizePanel = (value: string): string => {
   const lower = value.toLowerCase();
   if (lower.includes('bonnet') || lower.includes('hood')) return 'Bonnet';
@@ -87,6 +93,7 @@ const EstimateAnalysis: React.FC = () => {
   const [dispatchSecondsLeft, setDispatchSecondsLeft] = useState(DISPATCH_TOTAL_SECONDS);
   const [customerName, setCustomerName] = useState('');
   const [customerEmail, setCustomerEmail] = useState('');
+  const [invalidImageFallback, setInvalidImageFallback] = useState<InvalidImageFallbackState | null>(null);
   const containerRefs = useRef<(HTMLDivElement | null)[]>([]);
   const nextId = useRef(0);
   const suppressNextAdd = useRef(false);
@@ -103,6 +110,19 @@ const EstimateAnalysis: React.FC = () => {
     }
   }, []);
 
+  const showInvalidImageFallback = (source: 'upload' | 'live-scan') => {
+    sessionStorage.removeItem('estimateData');
+    sessionStorage.removeItem('liveScanDispatchMode');
+    sessionStorage.removeItem('liveScanFullAnalysis');
+    setInvalidImageFallback({ source, reason: 'no_vehicle_detected' });
+    console.info('[estimate-image-validation]', {
+      validation_status: 'invalid_image',
+      validation_reason: 'no_vehicle_detected',
+      source,
+      flow: 'public-estimate',
+    });
+  };
+
   useEffect(() => {
     if (!analysisInfo || !photoUrls.length) return;
     const count = Math.min(Math.max(0, analysisInfo.dentCount), 5);
@@ -118,6 +138,23 @@ const EstimateAnalysis: React.FC = () => {
   useEffect(() => {
     if (started.current) return;
     started.current = true;
+
+    const invalidFallbackRaw = sessionStorage.getItem(INVALID_IMAGE_FALLBACK_KEY);
+    if (invalidFallbackRaw) {
+      try {
+        const invalidFallback = JSON.parse(invalidFallbackRaw) as InvalidImageFallbackState;
+        setInvalidImageFallback({
+          source: invalidFallback.source || 'upload',
+          reason: invalidFallback.reason || 'no_vehicle_detected',
+        });
+      } catch {
+        setInvalidImageFallback({ source: 'upload', reason: 'no_vehicle_detected' });
+      } finally {
+        sessionStorage.removeItem(INVALID_IMAGE_FALLBACK_KEY);
+      }
+      setZip((window as any).__leadZipCode || '');
+      return;
+    }
 
     const dispatchModeRaw = sessionStorage.getItem('liveScanDispatchMode');
     if (dispatchModeRaw) {
@@ -146,7 +183,7 @@ const EstimateAnalysis: React.FC = () => {
           dentCount: Math.max(1, Number(dispatchMode.dentCount || 1)),
           level: dispatchMode.level || 'Shallow',
         });
-        setStage(4);
+        setStage(3);
       } catch {
         setZip((window as any).__leadZipCode || '');
         setTimeout(runAnalysis, 900);
@@ -220,7 +257,10 @@ const EstimateAnalysis: React.FC = () => {
         await Promise.all(files.map(async (f) => ({ f, ok: (await verifyIsCarImage(f)).is_car })))
       ).filter((v) => v.ok).map((v) => v.f);
 
-      if (!verified.length) throw new Error('Could not confirm a vehicle in the uploaded photo. Please upload a clearer dent image.');
+      if (!verified.length) {
+        showInvalidImageFallback('upload');
+        return;
+      }
 
       const panelResult = await identifyPanelsFromImages(verified);
       const panels = panelResult.panels.length ? panelResult.panels : [PanelType.Doors];
@@ -411,6 +451,101 @@ const EstimateAnalysis: React.FC = () => {
     const damageType = e.target.value;
     setAnalysisInfo((prev) => (prev ? { ...prev, damageType } : prev));
   };
+
+  const handleUploadAnotherPhoto = () => {
+    window.location.hash = '#/';
+  };
+
+  const handleBackToStart = () => {
+    window.location.hash = '#/';
+  };
+
+  if (invalidImageFallback) {
+    return (
+      <div className="min-h-screen" style={{ background: '#eef2f8' }}>
+        <EstimateHeader currentStep={1} />
+
+        <div className="max-w-4xl mx-auto px-4 py-8">
+          <div className="bg-white border border-[#d8e0f3] rounded-[28px] overflow-hidden shadow-sm">
+            <div className="bg-[#273548] px-6 py-5 text-white">
+              <p className="text-[11px] font-black tracking-[0.15em] uppercase text-[#9ec2ff]">AI Image Validation</p>
+              <h1 className="text-2xl md:text-3xl font-extrabold mt-1">We couldn’t detect a vehicle in this photo</h1>
+              <p className="text-sm text-[#d7e4ff] mt-2 max-w-2xl">
+                Dent-Vision AI can only estimate automotive dent damage from clear vehicle photos. Please upload a photo showing the damaged car panel.
+              </p>
+            </div>
+
+            <div className="p-5 md:p-6">
+              <div className="grid grid-cols-1 md:grid-cols-[1.1fr_0.9fr] gap-4 mb-4">
+                <div className="rounded-2xl border border-[#e5e7f0] bg-[#f8faff] p-4">
+                  <p className="text-xs font-black text-[#4f46e5] uppercase tracking-[0.14em] mb-2">How to fix this</p>
+                  <div className="space-y-2.5">
+                    {[
+                      'Upload a clear photo of the dent',
+                      'Show the full damaged vehicle panel',
+                      'Avoid screenshots, people, documents, tools, or unrelated images',
+                    ].map((item, index) => (
+                      <div key={item} className="rounded-xl border border-[#dde4f7] bg-white p-3 flex items-start gap-2.5">
+                        <span className="w-5 h-5 rounded-full bg-[#4f46e5] text-white text-[11px] font-bold flex items-center justify-center flex-shrink-0">{index + 1}</span>
+                        <p className="text-sm text-[#1f2937] leading-snug">{item}</p>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="rounded-2xl border border-[#e5e7f0] bg-[#f8faff] p-4 flex flex-col">
+                  <p className="text-xs font-black text-[#f97316] uppercase tracking-[0.14em] mb-2">Scan Status</p>
+                  <div className="rounded-xl bg-[#0f172a] h-36 relative overflow-hidden border border-[#1f2937] mb-3">
+                    <div
+                      className="absolute inset-0 opacity-30"
+                      style={{
+                        backgroundImage: 'linear-gradient(rgba(124,58,237,0.25) 1px, transparent 1px), linear-gradient(90deg, rgba(124,58,237,0.25) 1px, transparent 1px)',
+                        backgroundSize: '22px 22px',
+                      }}
+                    />
+                    <div className="invalid-scan-line" />
+                    <div className="absolute inset-0 flex items-center justify-center">
+                      <div className="w-14 h-14 rounded-full bg-[#7c3aed]/20 border border-[#a78bfa] flex items-center justify-center">
+                        <span className="text-2xl">🚘</span>
+                      </div>
+                    </div>
+                  </div>
+                  <p className="text-sm text-[#4b5563] leading-relaxed">
+                    No quote was created and no bodyshop has received this image.
+                  </p>
+                  <p className="text-xs text-[#6b7280] mt-2">
+                    You can upload another photo now or go back to the start and contact a shop directly.
+                  </p>
+                  <p className="text-[11px] text-[#8b93a7] mt-2">
+                    Source: {invalidImageFallback.source === 'live-scan' ? 'Live Scan' : 'Upload'}
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex flex-col sm:flex-row gap-3">
+                <button
+                  type="button"
+                  onClick={handleUploadAnotherPhoto}
+                  className="flex-1 rounded-xl py-3 px-4 text-white font-bold bg-gradient-to-r from-[#4f46e5] to-[#7c3aed] hover:brightness-110 transition-all"
+                >
+                  Upload Another Photo
+                </button>
+                <button
+                  type="button"
+                  onClick={handleBackToStart}
+                  className="flex-1 rounded-xl py-3 px-4 font-bold text-[#1f2937] bg-[#eef2ff] border border-[#d8def3] hover:bg-[#e4e9fb] transition-colors"
+                >
+                  Back to Start
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <DarkFooter />
+      </div>
+    );
+  }
 
   if (error) return (
     <div className="min-h-screen" style={{ background: '#eef2f8' }}>
@@ -1077,6 +1212,22 @@ const EstimateAnalysis: React.FC = () => {
           0%   { top: -2%;  opacity: 0; }
           6%   { opacity: 1; }
           94%  { opacity: 1; }
+          100% { top: 102%; opacity: 0; }
+        }
+        .invalid-scan-line {
+          position: absolute;
+          left: 0;
+          right: 0;
+          height: 2px;
+          background: linear-gradient(90deg, transparent 0%, #4f46e5 35%, #a855f7 65%, transparent 100%);
+          box-shadow: 0 0 10px #7c3aed88;
+          animation: invalidScan 2.1s linear infinite;
+          top: -2%;
+        }
+        @keyframes invalidScan {
+          0%   { top: -2%; opacity: 0; }
+          8%   { opacity: 1; }
+          92%  { opacity: 1; }
           100% { top: 102%; opacity: 0; }
         }
         .scan-corner {

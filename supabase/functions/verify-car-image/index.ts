@@ -7,8 +7,10 @@ type VerifyCarImageInput = {
 };
 
 type VerifyCarImageModelResponse = {
-  is_car: boolean;
-  reason: string;
+  is_valid?: boolean;
+  is_car?: boolean;
+  reason?: string;
+  detected_subject?: string;
 };
 
 Deno.serve(async (req) => {
@@ -40,23 +42,34 @@ Deno.serve(async (req) => {
     try {
       const modelResult = await generateGeminiJson<VerifyCarImageModelResponse>(
         [
-          'You are validating user-uploaded images for a dent estimate flow.',
-          'Return ONLY strict JSON: {"is_car": boolean, "reason": string}.',
-          'is_car=true only if the image clearly shows a real vehicle exterior.',
-          'If uncertain, return is_car=false and explain briefly.',
+          'You are a strict image validation agent for a PDR (Paintless Dent Repair) automotive damage assessment system.',
+          'Your ONLY job in this step is to determine whether the submitted image is valid for analysis.',
+          'An image is ONLY valid if it meets ALL of the following criteria:',
+          '1) The image clearly shows an exterior surface of a motor vehicle (car, truck, van, SUV, or motorcycle body panel).',
+          '2) The vehicle surface must be visible and in focus enough to assess for dents or damage.',
+          '3) The image is not a screenshot, illustration, design mockup, render, document, logo, or digital interface.',
+          '4) The image is not an interior shot, engine bay, tyre, wheel, or undercarriage.',
+          'Respond ONLY with strict JSON: {"is_valid": boolean, "reason": string, "detected_subject": string}.',
+          'If unsure, return is_valid=false.',
         ].join('\n'),
         [{ base64: image, mimeType: imageType || 'image/jpeg' }],
       );
 
+      const detectedSubject = String(modelResult.detected_subject || '').toLowerCase();
+      const nonVehicleSignals = /(screenshot|interface|ui|dashboard|website|document|logo|illustration|mockup|render)/;
+      const strictInvalid = nonVehicleSignals.test(detectedSubject);
+      const modelSaysValid = modelResult.is_valid ?? modelResult.is_car ?? false;
+      const isCar = strictInvalid ? false : !!modelSaysValid;
+
       return ok({
-        is_car: !!modelResult.is_car,
-        reason: modelResult.reason || (modelResult.is_car ? 'Vehicle verified.' : 'Could not verify vehicle image.'),
+        is_car: isCar,
+        reason: modelResult.reason || (isCar ? 'Vehicle exterior verified for dent analysis.' : 'Could not confidently verify a valid exterior vehicle damage image.'),
       });
     } catch (modelError) {
-      console.warn('[verify-car-image] Gemini unavailable, using safe fallback', modelError);
+      console.warn('[verify-car-image] Gemini unavailable, failing closed for strict validation', modelError);
       return ok({
-        is_car: true,
-        reason: 'Fallback verification passed. Please continue.',
+        is_car: false,
+        reason: 'Could not verify a valid exterior vehicle image at this time. Please upload a clear car panel photo.',
       });
     }
   } catch (error) {
