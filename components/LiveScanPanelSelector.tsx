@@ -76,13 +76,13 @@ const LiveScanPanelSelector: React.FC<LiveScanPanelSelectorProps> = ({
                   option.value === PanelType.Bumper
                     ? 'border-gray-200 bg-gray-100 opacity-60 cursor-not-allowed'
                     : isSelected 
-                      ? 'border-brand-cyan bg-cyan-50 shadow-md' 
+                      ? 'border-[#62cae9] bg-[#dff6ff] shadow-sm' 
                       : 'border-gray-200 hover:border-gray-300 hover:bg-gray-50'
                 }`}
               >
                 <div className={`w-5 h-5 rounded-full border-2 flex items-center justify-center flex-shrink-0 transition-all ${
                   isSelected 
-                    ? 'border-brand-cyan bg-brand-cyan' 
+                    ? 'border-[#62cae9] bg-[#62cae9]' 
                     : 'border-gray-300'
                 }`}>
                   {isSelected && (
@@ -106,7 +106,7 @@ const LiveScanPanelSelector: React.FC<LiveScanPanelSelectorProps> = ({
         <div className="flex items-center justify-center gap-2 mb-5 py-2 px-4 bg-gray-50 rounded-xl border border-gray-200">
           {selectedPanels.length > 0 ? (
             <div className="flex items-center gap-2 text-sm">
-              <div className="w-6 h-6 bg-brand-cyan rounded-full flex items-center justify-center">
+              <div className="w-6 h-6 bg-[#23c5de] rounded-full flex items-center justify-center">
                 <span className="text-white font-bold text-xs">{selectedPanels.length}</span>
               </div>
               <span className="font-semibold text-gray-900">
@@ -144,8 +144,8 @@ const LiveScanPanelSelector: React.FC<LiveScanPanelSelectorProps> = ({
             disabled={selectedPanels.length === 0}
             className={`flex-1 px-5 py-3 rounded-2xl font-bold transition-all ${
               selectedPanels.length > 0
-                ? 'bg-brand-cyan text-white hover:bg-cyan-600 shadow-lg'
-                : 'bg-gray-200 text-gray-400 cursor-not-allowed'
+                ? 'bg-[#23c5de] text-white hover:bg-[#1eb4cb] shadow-lg'
+                : 'bg-gray-100 text-gray-400 border border-gray-200 cursor-not-allowed'
             }`}
           >
             {isLiveScan ? 'Start Scan' : 'Start Camera'}

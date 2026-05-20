@@ -5,9 +5,8 @@ import DarkFooter from './DarkFooter';
 import LiveScanPanelSelector from './LiveScanPanelSelector';
 import LiveScanView from './LiveScanView';
 import LiveScanPauseView from './LiveScanPauseView';
-import LiveScanResultModal from './LiveScanResultModal';
 import { PanelType, VehicleType } from '../types';
-import { LiveScanResultExtended, runLiveScanAnalysis } from '../features/live-scan/liveScanOrchestrator';
+import { runLiveScanAnalysis } from '../features/live-scan/liveScanOrchestrator';
 
 const CAR_IMAGE_URL = 'https://swcwxzgjwgpvmuiwrugs.supabase.co/storage/v1/object/public/media/imgcar3.png';
 const LOGO_URL = 'https://swcwxzgjwgpvmuiwrugs.supabase.co/storage/v1/object/public/media/logo%20new%20wht.png';
@@ -36,13 +35,11 @@ const LeadsGenerator: React.FC = () => {
   const [showLiveScanActivationModal, setShowLiveScanActivationModal] = useState(false);
   const [showLiveScanView, setShowLiveScanView] = useState(false);
   const [showLiveScanPauseView, setShowLiveScanPauseView] = useState(false);
-  const [showLiveScanResultModal, setShowLiveScanResultModal] = useState(false);
   const [isProcessingLiveScan, setIsProcessingLiveScan] = useState(false);
   const [liveScanSelectedPanels, setLiveScanSelectedPanels] = useState<PanelType[]>([]);
   const [liveScanCurrentPanelIndex, setLiveScanCurrentPanelIndex] = useState(0);
   const [liveScanCapturedFrames, setLiveScanCapturedFrames] = useState<File[][]>([]);
   const [liveScanFrozenFrame, setLiveScanFrozenFrame] = useState('');
-  const [liveScanResult, setLiveScanResult] = useState<LiveScanResultExtended | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const cameraInputRef = useRef<HTMLInputElement>(null);
   const isMobile = /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
@@ -64,7 +61,6 @@ const LeadsGenerator: React.FC = () => {
     setShowLiveScanActivationModal(false);
     setShowLiveScanView(false);
     setShowLiveScanPauseView(false);
-    setShowLiveScanResultModal(false);
     setIsProcessingLiveScan(false);
   };
 
@@ -122,10 +118,47 @@ const LeadsGenerator: React.FC = () => {
         vehicleType: VehicleType.Sedan,
       });
 
-      setLiveScanResult(output.liveScanResult);
-      setShowLiveScanResultModal(true);
       (window as any).__leadUploadFiles = frames;
       sessionStorage.setItem('liveScanFullAnalysis', JSON.stringify(output.fullAnalysis));
+      const result = output.liveScanResult;
+      const estimateMin = Number(result.price_range?.min || result.estimated_cost?.min || 0);
+      const estimateMax = Number(result.price_range?.max || result.estimated_cost?.max || estimateMin);
+      const dents = Number(result.dent_count_estimate || 1);
+      const damageCategory = dents <= 2 ? 'Minor Dent' : dents <= 5 ? 'Moderate Dent' : 'Multiple Dents';
+      const repairTime = dents <= 2 ? '1–2 hours' : dents <= 5 ? '1–3 hours' : '3–5 hours';
+      const damageTypeLabel = result.damage_type === 'hail' ? 'Hail Damage' : 'PDR Dent';
+      const damageLevel = dents <= 2 ? 'Shallow' : dents <= 5 ? 'Medium' : 'Deep';
+
+      sessionStorage.setItem(
+        'estimateData',
+        JSON.stringify({
+          damageType: result.damage_type,
+          estimateMin,
+          estimateMax,
+          confidence: Math.round((result.confidence || 0.82) * 100),
+          dents,
+          scratches: result.needs_paint_repair ? 1 : 0,
+          damageCategory,
+          location: result.damage_location || 'Vehicle panel',
+          repairTime,
+          zip,
+          source: 'live-scan',
+        })
+      );
+
+      sessionStorage.setItem(
+        'liveScanDispatchMode',
+        JSON.stringify({
+          panelName: result.damage_location || 'Door/s',
+          damageType: damageTypeLabel,
+          dentCount: dents,
+          level: damageLevel,
+          zip,
+        })
+      );
+
+      closeLiveScanFlow();
+      window.location.hash = '#/estimate-analysis';
     } catch {
       setLiveScanPermissionError('Live Scan analysis could not be completed. Please try again with clearer lighting and slower movement.');
       setShowLiveScanPanelSelector(true);
@@ -149,35 +182,6 @@ const LeadsGenerator: React.FC = () => {
     }
 
     setShowLiveScanPauseView(true);
-  };
-
-  const handleLiveScanRequestQuote = () => {
-    if (!liveScanResult) return;
-
-    const estimateMin = Number(liveScanResult.price_range?.min || liveScanResult.estimated_cost?.min || 0);
-    const estimateMax = Number(liveScanResult.price_range?.max || liveScanResult.estimated_cost?.max || estimateMin);
-    const dents = Number(liveScanResult.dent_count_estimate || 1);
-    const damageCategory = dents <= 2 ? 'Minor Dent' : dents <= 5 ? 'Moderate Dent' : 'Multiple Dents';
-    const repairTime = dents <= 2 ? '1–2 hours' : dents <= 5 ? '1–3 hours' : '3–5 hours';
-
-    sessionStorage.setItem(
-      'estimateData',
-      JSON.stringify({
-        damageType: liveScanResult.damage_type,
-        estimateMin,
-        estimateMax,
-        confidence: Math.round((liveScanResult.confidence || 0.82) * 100),
-        dents,
-        scratches: liveScanResult.needs_paint_repair ? 1 : 0,
-        damageCategory,
-        location: liveScanResult.damage_location || 'Vehicle panel',
-        repairTime,
-        zip,
-      })
-    );
-
-    closeLiveScanFlow();
-    window.location.hash = '#/estimate-results';
   };
 
   const executeAction = (action: PendingConsentAction) => {
@@ -522,10 +526,16 @@ const LeadsGenerator: React.FC = () => {
 
       {showLiveScanActivationModal && (
         <div className="fixed inset-0 z-[80] bg-black/70 backdrop-blur-sm flex items-center justify-center p-5">
-          <div className="w-full max-w-md rounded-[28px] bg-[#f8fafc] p-7 shadow-2xl text-center">
-            <div className="text-[72px] leading-none mb-4">📲</div>
-            <h2 className="text-[50px] leading-[0.95] font-extrabold text-[#111827] mb-5">Quick Scan Activation</h2>
-            <p className="text-[17px] text-[#4b5563] leading-relaxed mb-7">
+          <div className="w-full max-w-md rounded-[30px] bg-[#f8fafc] p-7 shadow-2xl text-center">
+            <div className="w-20 h-20 mx-auto mb-4 flex items-center justify-center">
+              <img
+                src="https://wtfstakxspbnghalelby.supabase.co/storage/v1/object/public/media/icon%20celular.svg"
+                alt="Quick scan icon"
+                className="w-16 h-16 object-contain"
+              />
+            </div>
+            <h2 className="text-[36px] leading-[1] font-extrabold text-[#111827] mb-3">Quick Scan Activation</h2>
+            <p className="text-[14px] text-[#4b5563] leading-relaxed mb-6">
               The Live Scan will use your camera to quickly assess the damage in 15 seconds. Ensure good lighting and slowly move your camera over the damaged area while holding your phone horizontally.
             </p>
             <button
@@ -534,15 +544,15 @@ const LeadsGenerator: React.FC = () => {
                 setShowLiveScanActivationModal(false);
                 setShowLiveScanView(true);
               }}
-              className="w-full rounded-[18px] py-4 text-white text-[34px] leading-none font-bold mb-3"
+              className="w-full rounded-[18px] py-3.5 text-white text-[28px] leading-none font-bold mb-3"
               style={{ backgroundColor: '#23c5de' }}
             >
-              ⌗ Start Live Scan
+              ⊡ Start Live Scan
             </button>
             <button
               type="button"
               onClick={closeLiveScanFlow}
-              className="w-full rounded-[18px] py-4 text-[#111827] text-[38px] leading-none font-bold bg-[#e5e7eb]"
+              className="w-full rounded-[18px] py-3.5 text-[#111827] text-[22px] leading-none font-bold bg-[#e5e7eb]"
             >
               Cancel
             </button>
@@ -587,15 +597,6 @@ const LeadsGenerator: React.FC = () => {
             <p className="text-sm text-[#6b7280] mt-1">Analyzing damage and calculating estimate...</p>
           </div>
         </div>
-      )}
-
-      {showLiveScanResultModal && liveScanResult && (
-        <LiveScanResultModal
-          result={liveScanResult}
-          selectedPanels={liveScanSelectedPanels}
-          onClose={closeLiveScanFlow}
-          onRequestQuote={handleLiveScanRequestQuote}
-        />
       )}
 
       {/* ── How it works ── */}

@@ -46,6 +46,14 @@ interface AnalysisInfo {
   level: 'Shallow' | 'Medium' | 'Deep';
 }
 
+interface LiveScanDispatchMode {
+  panelName?: string;
+  damageType?: string;
+  dentCount?: number;
+  level?: AnalysisInfo['level'];
+  zip?: string;
+}
+
 const LEVEL_META = {
   Shallow: { color: '#22c55e', desc: 'Light surface dent · PDR easy' },
   Medium:  { color: '#f59e0b', desc: 'Moderate depth · PDR possible' },
@@ -110,6 +118,44 @@ const EstimateAnalysis: React.FC = () => {
   useEffect(() => {
     if (started.current) return;
     started.current = true;
+
+    const dispatchModeRaw = sessionStorage.getItem('liveScanDispatchMode');
+    if (dispatchModeRaw) {
+      try {
+        const dispatchMode: LiveScanDispatchMode = JSON.parse(dispatchModeRaw);
+        const initialZip = dispatchMode.zip || (window as any).__leadZipCode || '';
+        const estimateRaw = sessionStorage.getItem('estimateData');
+
+        if (estimateRaw) {
+          const estimate = JSON.parse(estimateRaw) as {
+            damageCategory?: string;
+            location?: string;
+            repairTime?: string;
+          };
+          setBottomData({
+            damageCategory: estimate.damageCategory || 'Minor Dent',
+            location: estimate.location || dispatchMode.panelName || 'Vehicle panel',
+            repairTime: estimate.repairTime || '1–2 hours',
+          });
+        }
+
+        setZip(initialZip);
+        setAnalysisInfo({
+          panelName: normalizePanel(dispatchMode.panelName || 'Door/s'),
+          damageType: dispatchMode.damageType || 'PDR Dent',
+          dentCount: Math.max(1, Number(dispatchMode.dentCount || 1)),
+          level: dispatchMode.level || 'Shallow',
+        });
+        setStage(4);
+      } catch {
+        setZip((window as any).__leadZipCode || '');
+        setTimeout(runAnalysis, 900);
+      } finally {
+        sessionStorage.removeItem('liveScanDispatchMode');
+      }
+      return;
+    }
+
     setZip((window as any).__leadZipCode || '');
     setTimeout(runAnalysis, 900);
   }, []);
