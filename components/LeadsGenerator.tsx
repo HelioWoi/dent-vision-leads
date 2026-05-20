@@ -109,17 +109,18 @@ const LeadsGenerator: React.FC = () => {
     <div className="min-h-screen overflow-x-hidden font-sans" style={{ background: '#f4f6fb' }}>
 
       {/* ── Header ── */}
-      <header className="pt-7 pb-3" style={{ backgroundColor: '#273548' }}>
-        <div className="max-w-7xl mx-auto px-4 flex items-center justify-center relative">
-          <img src={LOGO_URL} alt="Dent-Vision AI" className="h-12 mb-1" />
+      <header className="pt-5 sm:pt-7 pb-3" style={{ backgroundColor: '#273548' }}>
+        <div className="max-w-7xl mx-auto px-4 flex flex-col items-center justify-center gap-1 sm:gap-0 sm:flex-row relative">
+          <img src={LOGO_URL} alt="Dent-Vision AI" className="h-10 sm:h-12" />
           <a
             href="#/partner/login"
-            className="absolute right-4 inline-flex items-center gap-1.5 text-xs font-medium text-white/75 hover:text-white transition-colors"
+            className="inline-flex items-center gap-1.5 text-[11px] sm:text-xs font-medium text-white/75 hover:text-white transition-colors sm:absolute sm:right-4"
           >
             <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
             </svg>
-            Restricted owner access
+            <span className="sm:hidden">Owner access</span>
+            <span className="hidden sm:inline">Restricted owner access</span>
           </a>
         </div>
       </header>
@@ -190,9 +191,9 @@ const LeadsGenerator: React.FC = () => {
 
         {/* Center: centered square hero image */}
         <div className="flex items-center justify-center">
-          <div className="w-full max-w-[560px] aspect-square rounded-2xl overflow-hidden bg-[#eef1f7]">
+          <div className="w-full max-w-[560px] aspect-[4/3] sm:aspect-square rounded-2xl overflow-hidden bg-[#eef1f7]">
             <img src={HERO_DESKTOP_IMAGE_URL} alt="Hero banner" className="hidden lg:block w-full h-full object-contain object-center p-3" />
-            <img src={CAR_IMAGE_URL} alt="Car" className="lg:hidden w-full h-full object-cover object-center" />
+            <img src={CAR_IMAGE_URL} alt="Car" className="lg:hidden w-full h-full object-contain object-center p-2" />
           </div>
         </div>
 
