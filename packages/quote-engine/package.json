@@ -1,0 +1,16 @@
+{
+  "name": "@dent-vision/quote-engine",
+  "version": "1.0.0",
+  "description": "Self-contained AI analysis and pricing engine for Dent Vision. Config-injectable — no partner-specific DB calls.",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "private": true,
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": ["dent-vision", "pdr", "hail", "pricing", "quote-engine"],
+  "dependencies": {},
+  "devDependencies": {
+    "typescript": "^5.0.0"
+  }
+}

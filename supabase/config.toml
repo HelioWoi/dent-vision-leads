@@ -1,0 +1,22 @@
+project_id = "wtfstakxspbnghalelby"
+
+[functions.verify-car-image]
+verify_jwt = false
+
+[functions.identify-panels]
+verify_jwt = false
+
+[functions.analyze-dents-secure]
+verify_jwt = false
+
+[functions.get-car-mask]
+verify_jwt = false
+
+[functions.lookup-rego]
+verify_jwt = false
+
+[functions.analyze-live-scan]
+verify_jwt = false
+
+[functions.chatbot-assistant]
+verify_jwt = false
