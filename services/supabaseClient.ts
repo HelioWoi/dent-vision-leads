@@ -13,6 +13,9 @@ export const supabaseUrl = envBag.VITE_SUPABASE_URL;
 // 2. Chave API (anon public) - Uses environment variable, falls back to production
 const supabaseKey = envBag.VITE_SUPABASE_ANON_KEY;
 
+const fallbackSupabaseUrl = 'https://placeholder.supabase.co';
+const fallbackSupabaseKey = 'placeholder-anon-key';
+
 // Verifica se as chaves foram preenchidas
 export const isSupabaseConfigured = !!(supabaseUrl && supabaseKey && !supabaseKey.includes("COLE_SUA_CHAVE"));
 
@@ -23,6 +26,6 @@ if (!isSupabaseConfigured) {
 }
 
 export const supabase = createClient(
-    supabaseUrl, 
-    supabaseKey
+    isSupabaseConfigured ? supabaseUrl : fallbackSupabaseUrl,
+    isSupabaseConfigured ? supabaseKey : fallbackSupabaseKey
 );
