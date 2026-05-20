@@ -2,6 +2,12 @@ import React, { useRef, useState, useEffect } from 'react';
 import EstimateConsentModal from './PublicEstimate/EstimateConsentModal';
 import FlowLegalFooter from './PublicEstimate/FlowLegalFooter';
 import DarkFooter from './DarkFooter';
+import LiveScanPanelSelector from './LiveScanPanelSelector';
+import LiveScanView from './LiveScanView';
+import LiveScanPauseView from './LiveScanPauseView';
+import LiveScanResultModal from './LiveScanResultModal';
+import { PanelType, VehicleType } from '../types';
+import { LiveScanResultExtended, runLiveScanAnalysis } from '../features/live-scan/liveScanOrchestrator';
 
 const CAR_IMAGE_URL = 'https://swcwxzgjwgpvmuiwrugs.supabase.co/storage/v1/object/public/media/imgcar3.png';
 const LOGO_URL = 'https://swcwxzgjwgpvmuiwrugs.supabase.co/storage/v1/object/public/media/logo%20new%20wht.png';
@@ -12,6 +18,7 @@ const ANALYSIS_CARD_IMAGE_URL = 'https://swcwxzgjwgpvmuiwrugs.supabase.co/storag
 type PendingConsentAction =
   | { type: 'open-file' }
   | { type: 'open-camera' }
+  | { type: 'start-live-scan' }
   | { type: 'navigate' }
   | { type: 'process-files'; files: File[] };
 
@@ -22,6 +29,20 @@ const LeadsGenerator: React.FC = () => {
   const [showConsentModal, setShowConsentModal] = useState(false);
   const [consentAccepted, setConsentAccepted] = useState(false);
   const [pendingConsentAction, setPendingConsentAction] = useState<PendingConsentAction | null>(null);
+  const [showLiveScanPermissionModal, setShowLiveScanPermissionModal] = useState(false);
+  const [requestingLiveScanPermissions, setRequestingLiveScanPermissions] = useState(false);
+  const [liveScanPermissionError, setLiveScanPermissionError] = useState<string | null>(null);
+  const [showLiveScanPanelSelector, setShowLiveScanPanelSelector] = useState(false);
+  const [showLiveScanActivationModal, setShowLiveScanActivationModal] = useState(false);
+  const [showLiveScanView, setShowLiveScanView] = useState(false);
+  const [showLiveScanPauseView, setShowLiveScanPauseView] = useState(false);
+  const [showLiveScanResultModal, setShowLiveScanResultModal] = useState(false);
+  const [isProcessingLiveScan, setIsProcessingLiveScan] = useState(false);
+  const [liveScanSelectedPanels, setLiveScanSelectedPanels] = useState<PanelType[]>([]);
+  const [liveScanCurrentPanelIndex, setLiveScanCurrentPanelIndex] = useState(0);
+  const [liveScanCapturedFrames, setLiveScanCapturedFrames] = useState<File[][]>([]);
+  const [liveScanFrozenFrame, setLiveScanFrozenFrame] = useState('');
+  const [liveScanResult, setLiveScanResult] = useState<LiveScanResultExtended | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const cameraInputRef = useRef<HTMLInputElement>(null);
   const isMobile = /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
@@ -37,6 +58,128 @@ const LeadsGenerator: React.FC = () => {
     window.location.hash = '#/estimate-analysis';
   };
 
+  const closeLiveScanFlow = () => {
+    setShowLiveScanPermissionModal(false);
+    setShowLiveScanPanelSelector(false);
+    setShowLiveScanActivationModal(false);
+    setShowLiveScanView(false);
+    setShowLiveScanPauseView(false);
+    setShowLiveScanResultModal(false);
+    setIsProcessingLiveScan(false);
+  };
+
+  const requestLocationPermission = () =>
+    new Promise<void>((resolve) => {
+      if (!navigator.geolocation) {
+        resolve();
+        return;
+      }
+
+      navigator.geolocation.getCurrentPosition(
+        () => resolve(),
+        () => resolve(),
+        { timeout: 4000 }
+      );
+    });
+
+  const handleAllowLiveScanPermissions = async () => {
+    if (requestingLiveScanPermissions) return;
+
+    setRequestingLiveScanPermissions(true);
+    setLiveScanPermissionError(null);
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: 'environment' },
+      });
+      stream.getTracks().forEach((track) => track.stop());
+      await requestLocationPermission();
+
+      setShowLiveScanPermissionModal(false);
+      setShowLiveScanPanelSelector(true);
+    } catch {
+      setLiveScanPermissionError('Camera access is required to run Live Scan. Please allow camera permission and try again.');
+    } finally {
+      setRequestingLiveScanPermissions(false);
+    }
+  };
+
+  const processLiveScanAnalysis = async (capturedByPanel: File[][], selectedPanels: PanelType[]) => {
+    const frames = capturedByPanel.flat();
+    if (!frames.length) {
+      setLiveScanPermissionError('No scan frames were captured. Please try again.');
+      setShowLiveScanPanelSelector(true);
+      return;
+    }
+
+    setIsProcessingLiveScan(true);
+    setLiveScanPermissionError(null);
+
+    try {
+      const output = await runLiveScanAnalysis({
+        frames,
+        liveScanSelectedPanels: selectedPanels,
+        vehicleType: VehicleType.Sedan,
+      });
+
+      setLiveScanResult(output.liveScanResult);
+      setShowLiveScanResultModal(true);
+      (window as any).__leadUploadFiles = frames;
+      sessionStorage.setItem('liveScanFullAnalysis', JSON.stringify(output.fullAnalysis));
+    } catch {
+      setLiveScanPermissionError('Live Scan analysis could not be completed. Please try again with clearer lighting and slower movement.');
+      setShowLiveScanPanelSelector(true);
+    } finally {
+      setIsProcessingLiveScan(false);
+    }
+  };
+
+  const handleLiveScanPanelComplete = async (frames: File[], frozenFrame: string) => {
+    setShowLiveScanView(false);
+
+    const nextCaptured = [...liveScanCapturedFrames];
+    nextCaptured[liveScanCurrentPanelIndex] = frames;
+    setLiveScanCapturedFrames(nextCaptured);
+    setLiveScanFrozenFrame(frozenFrame);
+
+    const isLastPanel = liveScanCurrentPanelIndex >= liveScanSelectedPanels.length - 1;
+    if (isLastPanel) {
+      await processLiveScanAnalysis(nextCaptured, liveScanSelectedPanels);
+      return;
+    }
+
+    setShowLiveScanPauseView(true);
+  };
+
+  const handleLiveScanRequestQuote = () => {
+    if (!liveScanResult) return;
+
+    const estimateMin = Number(liveScanResult.price_range?.min || liveScanResult.estimated_cost?.min || 0);
+    const estimateMax = Number(liveScanResult.price_range?.max || liveScanResult.estimated_cost?.max || estimateMin);
+    const dents = Number(liveScanResult.dent_count_estimate || 1);
+    const damageCategory = dents <= 2 ? 'Minor Dent' : dents <= 5 ? 'Moderate Dent' : 'Multiple Dents';
+    const repairTime = dents <= 2 ? '1–2 hours' : dents <= 5 ? '1–3 hours' : '3–5 hours';
+
+    sessionStorage.setItem(
+      'estimateData',
+      JSON.stringify({
+        damageType: liveScanResult.damage_type,
+        estimateMin,
+        estimateMax,
+        confidence: Math.round((liveScanResult.confidence || 0.82) * 100),
+        dents,
+        scratches: liveScanResult.needs_paint_repair ? 1 : 0,
+        damageCategory,
+        location: liveScanResult.damage_location || 'Vehicle panel',
+        repairTime,
+        zip,
+      })
+    );
+
+    closeLiveScanFlow();
+    window.location.hash = '#/estimate-results';
+  };
+
   const executeAction = (action: PendingConsentAction) => {
     if (action.type === 'open-file') {
       fileInputRef.current?.click();
@@ -45,6 +188,12 @@ const LeadsGenerator: React.FC = () => {
 
     if (action.type === 'open-camera') {
       cameraInputRef.current?.click();
+      return;
+    }
+
+    if (action.type === 'start-live-scan') {
+      setLiveScanPermissionError(null);
+      setShowLiveScanPermissionModal(true);
       return;
     }
 
@@ -59,6 +208,11 @@ const LeadsGenerator: React.FC = () => {
   };
 
   const requestConsentAndRun = (action: PendingConsentAction) => {
+    if (action.type === 'start-live-scan') {
+      executeAction(action);
+      return;
+    }
+
     if (consentAccepted) {
       executeAction(action);
       return;
@@ -277,7 +431,7 @@ const LeadsGenerator: React.FC = () => {
               if (hasFiles) {
                 requestConsentAndRun({ type: 'navigate' });
               } else if (isMobile) {
-                requestConsentAndRun({ type: 'open-camera' });
+                requestConsentAndRun({ type: 'start-live-scan' });
               } else {
                 requestConsentAndRun({ type: 'open-file' });
               }
@@ -292,7 +446,7 @@ const LeadsGenerator: React.FC = () => {
             <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.2} d="M12 3l1.7 4.3L18 9l-4.3 1.7L12 15l-1.7-4.3L6 9l4.3-1.7L12 3z" />
             </svg>
-            {hasFiles ? 'Analyze My Photo →' : isMobile ? 'Take Photo to Start' : 'Start AI Estimate'}
+            {hasFiles ? 'Analyze My Photo →' : 'Start AI Estimate'}
           </button>
           <input ref={cameraInputRef} type="file" accept="image/*" capture="environment" className="hidden" onChange={handleFileChange} />
 
@@ -316,6 +470,133 @@ const LeadsGenerator: React.FC = () => {
         onAccept={acceptConsent}
         onClose={closeConsent}
       />
+
+      {showLiveScanPermissionModal && (
+        <div className="fixed inset-0 z-[80] bg-black/70 backdrop-blur-sm flex items-center justify-center p-5">
+          <div className="w-full max-w-md rounded-[28px] bg-[#f8fafc] p-6 shadow-2xl">
+            <h3 className="text-[40px] leading-none text-center mb-4">📱</h3>
+            <h2 className="text-[26px] leading-[1.15] font-extrabold text-[#1f2937] text-center mb-5">
+              Allow this app to request access to:
+            </h2>
+            <div className="space-y-3 text-[#1f2937] text-[19px] font-semibold">
+              <div className="flex items-center gap-3">
+                <input type="checkbox" checked readOnly className="h-6 w-6 accent-[#23c5de]" />
+                <span>Camera</span>
+              </div>
+              <div className="flex items-center gap-3">
+                <input type="checkbox" checked readOnly className="h-6 w-6 accent-[#23c5de]" />
+                <span>Geographic location</span>
+              </div>
+            </div>
+            <p className="text-center text-[#6b7280] text-[18px] leading-snug mt-6 mb-5">
+              The app may not work properly without these permissions.
+            </p>
+            {liveScanPermissionError ? (
+              <p className="text-sm text-red-600 text-center mb-4">{liveScanPermissionError}</p>
+            ) : null}
+            <button
+              type="button"
+              onClick={handleAllowLiveScanPermissions}
+              disabled={requestingLiveScanPermissions}
+              className="w-full rounded-xl py-3.5 text-white text-[30px] leading-none font-bold disabled:opacity-60"
+              style={{ backgroundColor: '#23c5de' }}
+            >
+              {requestingLiveScanPermissions ? 'Checking...' : 'Allow'}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {showLiveScanPanelSelector && (
+        <LiveScanPanelSelector
+          onCancel={closeLiveScanFlow}
+          onSelect={(selectedPanels) => {
+            setLiveScanSelectedPanels(selectedPanels);
+            setLiveScanCurrentPanelIndex(0);
+            setLiveScanCapturedFrames([]);
+            setShowLiveScanPanelSelector(false);
+            setShowLiveScanActivationModal(true);
+          }}
+        />
+      )}
+
+      {showLiveScanActivationModal && (
+        <div className="fixed inset-0 z-[80] bg-black/70 backdrop-blur-sm flex items-center justify-center p-5">
+          <div className="w-full max-w-md rounded-[28px] bg-[#f8fafc] p-7 shadow-2xl text-center">
+            <div className="text-[72px] leading-none mb-4">📲</div>
+            <h2 className="text-[50px] leading-[0.95] font-extrabold text-[#111827] mb-5">Quick Scan Activation</h2>
+            <p className="text-[17px] text-[#4b5563] leading-relaxed mb-7">
+              The Live Scan will use your camera to quickly assess the damage in 15 seconds. Ensure good lighting and slowly move your camera over the damaged area while holding your phone horizontally.
+            </p>
+            <button
+              type="button"
+              onClick={() => {
+                setShowLiveScanActivationModal(false);
+                setShowLiveScanView(true);
+              }}
+              className="w-full rounded-[18px] py-4 text-white text-[34px] leading-none font-bold mb-3"
+              style={{ backgroundColor: '#23c5de' }}
+            >
+              ⌗ Start Live Scan
+            </button>
+            <button
+              type="button"
+              onClick={closeLiveScanFlow}
+              className="w-full rounded-[18px] py-4 text-[#111827] text-[38px] leading-none font-bold bg-[#e5e7eb]"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+
+      {showLiveScanView && (
+        <LiveScanView
+          selectedPanels={liveScanSelectedPanels}
+          currentPanelIndex={liveScanCurrentPanelIndex}
+          onPanelComplete={handleLiveScanPanelComplete}
+          onScanComplete={() => {
+            setShowLiveScanView(false);
+            setLiveScanPermissionError('Live Scan ended due to inactivity. Please restart the scan.');
+            setShowLiveScanPanelSelector(true);
+          }}
+          onCancel={closeLiveScanFlow}
+        />
+      )}
+
+      {showLiveScanPauseView && (
+        <LiveScanPauseView
+          frozenFrame={liveScanFrozenFrame}
+          currentPanelIndex={liveScanCurrentPanelIndex}
+          totalPanels={liveScanSelectedPanels.length}
+          nextPanel={liveScanSelectedPanels[liveScanCurrentPanelIndex + 1] ?? null}
+          onCancel={closeLiveScanFlow}
+          onNextPanel={() => {
+            setShowLiveScanPauseView(false);
+            setLiveScanCurrentPanelIndex((prev) => prev + 1);
+            setShowLiveScanView(true);
+          }}
+        />
+      )}
+
+      {isProcessingLiveScan && (
+        <div className="fixed inset-0 z-[90] bg-black/75 backdrop-blur-sm flex items-center justify-center p-6">
+          <div className="bg-white rounded-2xl p-6 text-center max-w-sm w-full">
+            <div className="text-3xl mb-2">⚙️</div>
+            <p className="text-lg font-bold text-[#111827]">Processing Live Scan</p>
+            <p className="text-sm text-[#6b7280] mt-1">Analyzing damage and calculating estimate...</p>
+          </div>
+        </div>
+      )}
+
+      {showLiveScanResultModal && liveScanResult && (
+        <LiveScanResultModal
+          result={liveScanResult}
+          selectedPanels={liveScanSelectedPanels}
+          onClose={closeLiveScanFlow}
+          onRequestQuote={handleLiveScanRequestQuote}
+        />
+      )}
 
       {/* ── How it works ── */}
       <section className="py-14 mt-5" style={{ background: '#dde3f5' }}>
@@ -562,7 +843,15 @@ const LeadsGenerator: React.FC = () => {
 
             <div className="min-w-0">
               <button
-                onClick={() => requestConsentAndRun(hasFiles ? { type: 'navigate' } : { type: 'open-file' })}
+                onClick={() => {
+                  if (hasFiles) {
+                    requestConsentAndRun({ type: 'navigate' });
+                  } else if (isMobile) {
+                    requestConsentAndRun({ type: 'start-live-scan' });
+                  } else {
+                    requestConsentAndRun({ type: 'open-file' });
+                  }
+                }}
                 className="w-full py-2.5 rounded-full font-semibold text-[14px] text-white flex items-center justify-center gap-1.5 transition-all [animation:softPulse_3s_ease-in-out_infinite]"
                 style={{
                   background: 'linear-gradient(90deg, #5b5dfd 0%, #b667d4 48%, #f19a48 100%)',
