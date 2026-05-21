@@ -42,34 +42,45 @@ Deno.serve(async (req) => {
     try {
       const modelResult = await generateGeminiJson<VerifyCarImageModelResponse>(
         [
-          'You are a strict image validation agent for a PDR (Paintless Dent Repair) automotive damage assessment system.',
-          'Your ONLY job in this step is to determine whether the submitted image is valid for analysis.',
-          'An image is ONLY valid if it meets ALL of the following criteria:',
-          '1) The image clearly shows an exterior surface of a motor vehicle (car, truck, van, SUV, or motorcycle body panel).',
-          '2) The vehicle surface must be visible and in focus enough to assess for dents or damage.',
-          '3) The image is not a screenshot, illustration, design mockup, render, document, logo, or digital interface.',
-          '4) The image is not an interior shot, engine bay, tyre, wheel, or undercarriage.',
+          'You are an image triage agent for a PDR (Paintless Dent Repair) automotive damage system.',
+          'Your job is to determine if this image could plausibly be used for vehicle damage assessment.',
+          'Be GENEROUS: close-up shots of car panels, doors, paint, dents, scratches, bodywork are ALL valid.',
+          'Even if you cannot see the full car, a close-up of a panel, door handle area, or painted metal surface IS valid.',
+          'Set is_valid=true for: car door, car panel, bonnet, boot, bumper, fender, bodywork, paint with damage, metal surface with dent or scratch.',
+          'Set is_valid=false ONLY for images that are clearly NOT automotive: screenshots, UI, websites, documents, invoices, logos, photos of people, food, animals, furniture, or unrelated objects.',
+          'If you are unsure, set is_valid=true. Benefit of the doubt always goes to the user.',
           'Respond ONLY with strict JSON: {"is_valid": boolean, "reason": string, "detected_subject": string}.',
-          'If unsure, return is_valid=false.',
         ].join('\n'),
         [{ base64: image, mimeType: imageType || 'image/jpeg' }],
       );
 
       const detectedSubject = String(modelResult.detected_subject || '').toLowerCase();
-      const nonVehicleSignals = /(screenshot|interface|ui|dashboard|website|document|logo|illustration|mockup|render)/;
-      const strictInvalid = nonVehicleSignals.test(detectedSubject);
-      const modelSaysValid = modelResult.is_valid ?? modelResult.is_car ?? false;
-      const isCar = strictInvalid ? false : !!modelSaysValid;
+
+      // Only block content that is clearly and unambiguously NOT a vehicle
+      const hardNonVehicle = /\b(screenshot|ui interface|website page|document|invoice|receipt|logo design|illustration|mockup|3d render|photo of person|human face|food|animal|furniture)\b/;
+      const isHardBlocked = hardNonVehicle.test(detectedSubject);
+
+      // Accept if model says valid, OR if no hard-block signal found
+      const modelSaysValid = modelResult.is_valid ?? modelResult.is_car ?? true;
+      const isCar = isHardBlocked ? false : (modelSaysValid !== false);
+
+      console.info('[verify-car-image]', {
+        is_car: isCar,
+        detected_subject: modelResult.detected_subject,
+        model_is_valid: modelResult.is_valid,
+        hard_blocked: isHardBlocked,
+      });
 
       return ok({
         is_car: isCar,
-        reason: modelResult.reason || (isCar ? 'Vehicle exterior verified for dent analysis.' : 'Could not confidently verify a valid exterior vehicle damage image.'),
+        reason: modelResult.reason || (isCar ? 'Image accepted for vehicle damage analysis.' : 'Image does not appear to contain a vehicle exterior.'),
       });
     } catch (modelError) {
-      console.warn('[verify-car-image] Gemini unavailable, failing closed for strict validation', modelError);
+      // Fail OPEN — if Gemini is unavailable, let the deep analysis decide
+      console.warn('[verify-car-image] Gemini unavailable, failing open', modelError);
       return ok({
-        is_car: false,
-        reason: 'Could not verify a valid exterior vehicle image at this time. Please upload a clear car panel photo.',
+        is_car: true,
+        reason: 'Could not verify image — proceeding to analysis.',
       });
     }
   } catch (error) {

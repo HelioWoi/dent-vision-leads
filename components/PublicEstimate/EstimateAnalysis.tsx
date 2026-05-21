@@ -282,18 +282,30 @@ const EstimateAnalysis: React.FC = () => {
         : 'Vehicle Panel';
       const repairTime = dentCount <= 2 ? '1–2 hours' : dentCount <= 5 ? '1–3 hours' : '3–5 hours';
       const isHail = detectHailDamage(analysis);
+      const hasPaintDamage = !!(analysis.flags?.pdr_incompatible) || analysis.summary.total_scratches > 0;
 
       const estMin = analysis.summary.estimated_total_cost_AUD?.min ?? 225;
       const estMax = analysis.summary.estimated_total_cost_AUD?.max ?? 395;
 
+      console.info('[estimate-ai-source]', {
+        _source: (analysis as any)._source || 'unknown',
+        estimated_min: estMin,
+        estimated_max: estMax,
+        total_dents: dentCount,
+        total_scratches: analysis.summary.total_scratches,
+        pdr_incompatible: analysis.flags?.pdr_incompatible,
+        hasPaintDamage,
+      });
+
       const payload = {
         analysis,
-        damageType: isHail ? 'hail' : 'pdr',
+        damageType: isHail ? 'hail' : hasPaintDamage ? 'paint' : 'pdr',
         estimateMin: estMin,
         estimateMax: estMax,
         confidence: analysis.summary.confidence_overall,
         dents: dentCount,
         scratches: analysis.summary.total_scratches,
+        hasPaintDamage,
         damageCategory,
         location,
         repairTime,

@@ -15,6 +15,7 @@ interface EstimateData {
   location: string;
   repairTime: string;
   zip: string;
+  hasPaintDamage?: boolean;
   isDemo?: boolean;
   fallbackScenario?: FallbackScenario;
   responsesCount?: number;
@@ -519,7 +520,7 @@ const EstimateResults: React.FC = () => {
                     </svg>
                     <p className="text-[11px] text-[#9ca3af]">Damage Type</p>
                     <p className="text-sm font-bold text-[#111827]">{data.damageCategory}</p>
-                    <p className="text-[11px] text-[#9ca3af]">No paint required</p>
+                    <p className="text-[11px] text-[#9ca3af]">{data.hasPaintDamage ? 'Paint repair likely required' : 'No paint required'}</p>
                   </div>
                   <div className="text-center">
                     <svg className="w-5 h-5 text-[#9ca3af] mx-auto mb-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
