@@ -324,8 +324,9 @@ export const analyzeDentsSecure = async (
   );
 
   if (!response.success || !response.data) {
-    const errorMessage = response.error || 'Analysis failed';
-    throw new Error(errorMessage);
+    const err: any = new Error(response.error || 'Analysis failed');
+    err.code = response.code;
+    throw err;
   }
 
   return response.data;

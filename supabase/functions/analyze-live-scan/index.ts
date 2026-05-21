@@ -16,6 +16,23 @@ type AnalyzeLiveScanModelResponse = {
   notes?: string;
 };
 
+const LIVE_SCAN_ANALYSIS_PROMPT = [
+  'You are an expert automotive dent analysis assistant for live camera scans.',
+  'Analyze all frames together as the same vehicle panel sequence, not as separate jobs.',
+  'Count visible dents conservatively and avoid double-counting the same dent across angles/frames.',
+  'Focus on: dent_count, scratch_count, severity, confidence, and short notes.',
+  'Use vehicle references to estimate size and severity when possible:',
+  '- Door handle: ~180-200mm',
+  '- Fuel cap: ~150-180mm',
+  '- Wheel diameter: ~400-500mm',
+  'Severity guidance:',
+  '- Minor: mostly small/shallow dents',
+  '- Moderate: multiple visible dents or medium deformation',
+  '- Severe: large/deep dents, crease-like damage, or broad panel distortion',
+  'If frames are blurry, dark, or inconsistent, reduce confidence accordingly.',
+  'Return ONLY strict JSON: {"dent_count":number,"scratch_count":number,"severity":"Minor|Moderate|Severe|Unknown","confidence":number,"notes":string}.',
+].join('\n');
+
 const fallbackPayload = (vehicleType: string) => ({
   panels: [
     {
@@ -69,11 +86,8 @@ Deno.serve(async (req) => {
 
     try {
       const modelResult = await generateGeminiJson<AnalyzeLiveScanModelResponse>(
-        [
-          'Analyze these vehicle scan frames and return damage summary.',
-          'Return ONLY strict JSON: {"dent_count":number,"scratch_count":number,"severity":"Minor|Moderate|Severe|Unknown","confidence":number,"notes":string}.',
-        ].join('\n'),
-        frames.slice(0, 4).map((base64) => ({ base64, mimeType: 'image/jpeg' })),
+        LIVE_SCAN_ANALYSIS_PROMPT,
+        frames.slice(0, 6).map((base64) => ({ base64, mimeType: 'image/jpeg' })),
       );
 
       const dentCount = Math.max(0, Math.round(modelResult.dent_count || 0));

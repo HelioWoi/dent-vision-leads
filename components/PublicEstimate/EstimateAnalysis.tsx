@@ -309,6 +309,10 @@ const EstimateAnalysis: React.FC = () => {
       setStage(3);
       animateShops(estMin, estMax);
     } catch (err) {
+      if ((err as any)?.code === 'INVALID_IMAGE') {
+        showInvalidImageFallback('upload');
+        return;
+      }
       const msg = err instanceof Error ? err.message : String(err);
       if (isAuthError(msg)) {
         const payload = buildDemoPayload();

@@ -1,6 +1,49 @@
 import { corsHeaders, fail, ok } from '../_shared/response.ts';
 import { generateGeminiJson } from '../_shared/gemini.ts';
 
+const STRICT_VEHICLE_VALIDATION_PROMPT = [
+  'You are a strict image validation agent for a PDR (Paintless Dent Repair) automotive damage assessment system.',
+  'Your ONLY job in this step is to determine whether the submitted image is valid for analysis.',
+  'An image is ONLY valid if it meets ALL of the following criteria:',
+  '1) The image clearly shows an exterior surface of a motor vehicle (car, truck, van, SUV, or motorcycle body panel).',
+  '2) The vehicle surface must be visible and in focus enough to assess for dents or damage.',
+  '3) The image is not a screenshot, illustration, design mockup, render, document, logo, or digital interface.',
+  '4) The image is not an interior shot, engine bay, tyre, wheel, or undercarriage.',
+  'Respond ONLY with a valid JSON object in this exact format — no extra text:',
+  '{"is_valid": true or false, "reason": "brief explanation in one sentence", "detected_subject": "what you actually see in the image"}',
+  'If is_valid is false, the system will block progression. Do not be lenient. When in doubt, return false.',
+].join('\n');
+
+const DENT_ANALYSIS_PROMPT = [
+  'You are an expert automotive dent analysis assistant for PDR pre-estimation.',
+  'Analyze ONLY exterior vehicle body-panel damage from all provided photos together.',
+  'If the same dent appears in multiple photos/angles, count it once (no double counting).',
+  'Focus on: dent count, dent size, dent depth, scratch count, and overall severity.',
+  'Estimate dent size using visible references when possible:',
+  '- Door handle: ~180-200mm',
+  '- Fuel cap: ~150-180mm',
+  '- Wheel diameter: ~400-500mm',
+  'Depth rules:',
+  '- Shallow: subtle reflection distortion, no sharp crease',
+  '- Medium: clear visible deformation, moderate depth',
+  '- Deep: sharp/strong deformation, crease or collapse-like shape',
+  'Severity rules:',
+  '- Minor: mostly small/shallow dents',
+  '- Moderate: medium dents or multiple visible dents',
+  '- Severe: large/deep dents, crease-like damage, or broad panel deformation',
+  'Confidence must be between 0 and 1. Use lower confidence if lighting/angle is poor.',
+  'Return ONLY strict JSON with fields:',
+  '{"dent_count":number,"scratch_count":number,"severity":"Minor|Moderate|Severe|Unknown","estimated_min":number,"estimated_max":number,"confidence":number,"notes":string,"dents":[{"size_cm":number,"depth":"Shallow|Medium|Deep","severity_score":number,"confidence":number,"polygon":[[x,y],[x,y],[x,y]]}]}.',
+  'For dents[].size_cm, provide realistic size estimates from visual evidence.',
+  'Use conservative values when uncertain and explain key observations briefly in notes.',
+].join('\n');
+
+type ValidationResult = {
+  is_valid?: boolean;
+  reason?: string;
+  detected_subject?: string;
+};
+
 type AnalyzeDentsInput = {
   images?: string[];
   imageTypes?: string[];
@@ -144,14 +187,42 @@ Deno.serve(async (req) => {
     const vehicleType = body.vehicleDetails?.vehicleType || 'sedan';
 
     try {
+      const firstImage = { base64: images[0], mimeType: imageTypes[0] || 'image/jpeg' };
+      const validation = await generateGeminiJson<ValidationResult>(
+        STRICT_VEHICLE_VALIDATION_PROMPT,
+        [firstImage],
+      );
+
+      const detectedSubject = String(validation.detected_subject || '').toLowerCase();
+      const nonVehicleSignals = /(screenshot|interface|ui|dashboard|website|document|logo|illustration|mockup|render|phone|app|browser|menu|button|form|page|screen)/;
+      const isNonVehicle = nonVehicleSignals.test(detectedSubject);
+      const modelSaysValid = validation.is_valid ?? false;
+
+      if (!modelSaysValid || isNonVehicle) {
+        console.info('[analyze-dents-secure] Image validation failed', {
+          is_valid: validation.is_valid,
+          detected_subject: validation.detected_subject,
+          reason: validation.reason,
+          is_non_vehicle_signal: isNonVehicle,
+        });
+        return fail(
+          validation.reason || 'Not a valid vehicle exterior image. Please upload a clear photo of a car panel.',
+          'INVALID_IMAGE',
+          422,
+        );
+      }
+    } catch (validationError) {
+      console.warn('[analyze-dents-secure] Validation step failed (Gemini error), failing closed', validationError);
+      return fail(
+        'Could not verify a valid vehicle image at this time. Please upload a clear car panel photo.',
+        'INVALID_IMAGE',
+        422,
+      );
+    }
+
+    try {
       const modelResult = await generateGeminiJson<AnalyzeModelResponse>(
-        [
-          'You are an automotive dent estimation assistant.',
-          'Analyze provided vehicle exterior images and estimate dent repair scope.',
-          'Return ONLY strict JSON with fields:',
-          '{"dent_count":number,"scratch_count":number,"severity":"Minor|Moderate|Severe|Unknown","estimated_min":number,"estimated_max":number,"confidence":number,"notes":string,"dents":[{"size_cm":number,"depth":"Shallow|Medium|Deep","severity_score":number,"confidence":number,"polygon":[[x,y],[x,y],[x,y]]}]}.',
-          'Use conservative estimates and confidence between 0 and 1.',
-        ].join('\n'),
+        DENT_ANALYSIS_PROMPT,
         images.slice(0, 4).map((base64, i) => ({ base64, mimeType: imageTypes[i] || 'image/jpeg' })),
       );
 

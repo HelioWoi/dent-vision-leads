@@ -186,7 +186,26 @@ const LeadsGenerator: React.FC = () => {
 
       closeLiveScanFlow();
       window.location.hash = '#/estimate-analysis';
-    } catch {
+    } catch (err: any) {
+      if (err?.code === 'INVALID_IMAGE') {
+        sessionStorage.removeItem('estimateData');
+        sessionStorage.removeItem('liveScanDispatchMode');
+        sessionStorage.removeItem('liveScanFullAnalysis');
+        sessionStorage.setItem(
+          INVALID_IMAGE_FALLBACK_KEY,
+          JSON.stringify({ source: 'live-scan', reason: 'no_vehicle_detected' })
+        );
+        console.info('[estimate-image-validation]', {
+          validation_status: 'invalid_image',
+          validation_reason: 'no_vehicle_detected',
+          source: 'live-scan',
+          flow: 'public-estimate',
+          via: 'analysis-function',
+        });
+        closeLiveScanFlow();
+        window.location.hash = '#/estimate-analysis';
+        return;
+      }
       setLiveScanPermissionError('Live Scan analysis could not be completed. Please try again with clearer lighting and slower movement.');
       setShowLiveScanPanelSelector(true);
     } finally {
