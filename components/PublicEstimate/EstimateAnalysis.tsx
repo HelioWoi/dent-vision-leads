@@ -289,6 +289,7 @@ const EstimateAnalysis: React.FC = () => {
 
       console.info('[estimate-ai-source]', {
         _source: (analysis as any)._source || 'unknown',
+        _openai_error: (analysis as any)._openai_error || null,
         estimated_min: estMin,
         estimated_max: estMax,
         total_dents: dentCount,

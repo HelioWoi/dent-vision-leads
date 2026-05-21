@@ -388,6 +388,8 @@ Deno.serve(async (req) => {
     }
 
     // ── Step 2a: OpenAI Vision deep analysis (preferred) ────────────────────
+    let _openaiError: string | null = null;
+    console.info('[analyze-dents-secure] isOpenAIConfigured:', isOpenAIConfigured());
     if (isOpenAIConfigured()) {
       try {
         const aiResult = await generateOpenAIVisionJson<OpenAIAnalysis>(
@@ -403,8 +405,12 @@ Deno.serve(async (req) => {
         });
         return ok(buildResponseFromOpenAI(vehicleType, aiResult));
       } catch (openAIError) {
-        console.warn('[analyze-dents-secure] OpenAI failed, falling back to Gemini', openAIError);
+        _openaiError = String(openAIError);
+        console.warn('[analyze-dents-secure] OpenAI failed, falling back to Gemini', _openaiError);
       }
+    } else {
+      _openaiError = 'OPENAI_API_KEY not configured in Supabase secrets';
+      console.warn('[analyze-dents-secure]', _openaiError);
     }
 
     // ── Step 2b: Gemini dent analysis (fallback when OpenAI unavailable) ────
@@ -413,10 +419,10 @@ Deno.serve(async (req) => {
         GEMINI_DENT_ANALYSIS_PROMPT,
         imageSlice,
       );
-      return ok(buildResponseFromGemini(vehicleType, geminiResult, triage));
+      return ok({ ...buildResponseFromGemini(vehicleType, geminiResult, triage), _openai_error: _openaiError });
     } catch (geminiError) {
       console.warn('[analyze-dents-secure] Gemini analysis failed, using hard fallback', geminiError);
-      return ok(hardFallback(vehicleType, 'Fallback estimate used. Please upload a clearer photo for better accuracy.'));
+      return ok({ ...hardFallback(vehicleType, 'Fallback estimate used. Please upload a clearer photo for better accuracy.'), _openai_error: _openaiError });
     }
   } catch (error) {
     console.error('[analyze-dents-secure] error', error);
