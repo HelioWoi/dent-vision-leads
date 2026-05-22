@@ -150,6 +150,7 @@ const LeadsGenerator: React.FC = () => {
       });
 
       (window as any).__leadUploadFiles = frames;
+      (window as any).__leadSelectedPanels = selectedPanels;
       sessionStorage.setItem('liveScanFullAnalysis', JSON.stringify(output.fullAnalysis));
       const result = output.liveScanResult;
       const estimateMin = Number(result.price_range?.min || result.estimated_cost?.min || 0);

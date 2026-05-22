@@ -24,6 +24,27 @@ interface EstimateData {
   shopsReviewing?: number;
   pdrSuitable?: boolean;
   inspectionRequired?: boolean;
+  panelBreakdownData?: Array<{
+    panelLabel: string;
+    dentCount: number;
+    damageType: string;
+    sizePretty: string;
+    depth: string;
+    severity: string;
+    repairTime: string;
+    minCost: number;
+    maxCost: number;
+  }>;
+  analysis?: {
+    panels?: Array<{
+      panel_name?: string;
+      dent_count?: number;
+      estimated_panel_cost_AUD?: {
+        min?: number;
+        max?: number;
+      };
+    }>;
+  };
 }
 
 type FallbackScenario = 'no-responses' | 'not-suitable-pdr' | 'inspection-required';
@@ -66,6 +87,18 @@ const buildFallbackData = (): EstimateData => ({
 
 const TOTAL_SHOPS = 24;
 const RESPONDED = 5;
+
+const prettyPanelName = (value?: string): string => {
+  if (!value) return 'Panel';
+  const key = value.toLowerCase();
+  if (key === 'doors') return 'Doors (All)';
+  if (key === 'guard') return 'Guard (Front/Rear)';
+  if (key === 'boot') return 'Boot';
+  if (key === 'bonnet') return 'Bonnet';
+  if (key === 'roof') return 'Roof';
+  if (key === 'bumper') return 'Bumper';
+  return value.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+};
 
 const isFallbackScenario = (value: string | null): value is FallbackScenario =>
   value === 'no-responses' || value === 'not-suitable-pdr' || value === 'inspection-required';
@@ -177,6 +210,32 @@ const EstimateResults: React.FC = () => {
   const lowestPrice  = shops[0]?.price ?? 0;
   const highestPrice = shops[shops.length - 1]?.price ?? 0;
   const aiMid = Math.round((data.estimateMin + data.estimateMax) / 2) || 275;
+
+  // panelBreakdownData (saved from analysis step) is the authoritative source.
+  // Fall back to analysis.panels if not present (single-panel flow).
+  const panelPricing: { panelLabel: string; dents: number; min: number; max: number }[] =
+    data.panelBreakdownData && data.panelBreakdownData.length > 0
+      ? data.panelBreakdownData.map((p) => ({
+          panelLabel: p.panelLabel,
+          dents: p.dentCount,
+          min: p.minCost,
+          max: p.maxCost,
+        }))
+      : (data.analysis?.panels || [])
+          .map((p) => {
+            const min = p.estimated_panel_cost_AUD?.min ?? 0;
+            const max = p.estimated_panel_cost_AUD?.max ?? 0;
+            if (min <= 0 && max <= 0) return null;
+            return { panelLabel: prettyPanelName(p.panel_name), dents: p.dent_count ?? 0, min, max };
+          })
+          .filter((p): p is { panelLabel: string; dents: number; min: number; max: number } => !!p);
+
+  const breakdownMin = panelPricing.reduce((sum, p) => sum + p.min, 0);
+  const breakdownMax = panelPricing.reduce((sum, p) => sum + p.max, 0);
+  const hasPanelBreakdown = panelPricing.length > 0;
+  const finalMin = hasPanelBreakdown ? breakdownMin : data.estimateMin;
+  const finalMax = hasPanelBreakdown ? breakdownMax : data.estimateMax;
+  const finalMid = Math.round((finalMin + finalMax) / 2);
   const barPct = highestPrice > lowestPrice
     ? ((aiMid - lowestPrice) / (highestPrice - lowestPrice)) * 100
     : 50;
@@ -250,6 +309,7 @@ const EstimateResults: React.FC = () => {
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l2.5 2.5M12 22a10 10 0 100-20 10 10 0 000 20z" />
                   </svg>
                 </div>
+
                 <p className="text-[11px] font-bold tracking-[0.12em] text-[#f59e0b] uppercase mb-1">Still searching</p>
                 <h1 className="text-3xl font-extrabold text-[#111827] leading-tight">We’re still searching for the best repair specialist for you</h1>
                 <p className="text-sm text-[#6b7280] mt-2">
@@ -487,10 +547,12 @@ const EstimateResults: React.FC = () => {
               </p>
               <div className="grid grid-cols-1 md:grid-cols-[auto_280px_1fr] gap-4 items-start">
                 <div>
-                  <p className="text-5xl font-extrabold text-[#111827] leading-none">${aiMid}</p>
-                  <p className="text-xs text-[#9ca3af] mt-1">Total ⓘ</p>
+                  <p className="text-5xl font-extrabold text-[#111827] leading-none">${finalMid}</p>
+                  <p className="text-xs text-[#9ca3af] mt-1">
+                    {hasPanelBreakdown ? `${panelPricing.length} panel${panelPricing.length !== 1 ? 's' : ''} · $${finalMin}–$${finalMax}` : `Range $${data.estimateMin}–$${data.estimateMax}`}
+                  </p>
                   <div className="mt-2 inline-flex items-center gap-1 text-[11px] bg-[#f0fdf4] text-green-700 font-semibold px-2 py-1 rounded-full">
-                    🏷 You save up to ${highestPrice - lowestPrice}
+                    You save up to ${highestPrice - lowestPrice}
                   </div>
                 </div>
                 <div>
@@ -587,6 +649,43 @@ const EstimateResults: React.FC = () => {
                 <span className="font-semibold text-[#4f46e5]">${lowestPrice} – ${lowestPrice + 75}</span>
               </p>
             </div>
+
+            {/* Final calculated pricing */}
+            {(hasPanelBreakdown || data.estimateMin > 0) && (
+              <div className="bg-white rounded-2xl p-6 shadow-sm border border-[#e5e7eb]">
+                <div className="flex items-center justify-between mb-4">
+                  <p className="font-bold text-[#111827] text-sm">Final Price Calculation</p>
+                  <span className="text-xs text-[#6b7280]">Based on AI panel analysis</span>
+                </div>
+
+                {hasPanelBreakdown && (
+                  <div className="space-y-2.5 mb-4">
+                    {panelPricing.map((row, idx) => (
+                      <div key={`${row.panelLabel}-${idx}`} className="flex items-center justify-between gap-3 rounded-xl border border-[#eef1f6] bg-[#f8faff] px-3 py-2.5">
+                        <div>
+                          <p className="text-sm font-semibold text-[#111827]">{row.panelLabel}</p>
+                          <p className="text-[11px] text-[#9ca3af]">{row.dents} dent{row.dents !== 1 ? 's' : ''}</p>
+                        </div>
+                        <p className="text-sm font-bold text-[#111827]">${row.min} – ${row.max}</p>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                <div className="border-t border-[#e5e7eb] pt-4">
+                  <div className="flex items-end justify-between">
+                    <div>
+                      <p className="text-[11px] text-[#9ca3af] uppercase tracking-wide">Final Price</p>
+                      <p className="text-3xl font-extrabold text-[#111827]">${finalMid}</p>
+                      <p className="text-[11px] text-[#9ca3af]">Range: ${finalMin} – ${finalMax}</p>
+                    </div>
+                    <p className="text-[11px] text-[#6b7280] text-right max-w-[220px]">
+                      Final quote remains subject to bodyshop review and on-site inspection.
+                    </p>
+                  </div>
+                </div>
+              </div>
+            )}
 
             {/* Paint damage notice */}
             {data.hasPaintDamage && (

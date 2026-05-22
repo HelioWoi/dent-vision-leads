@@ -121,6 +121,7 @@ const EstimateAnalysis: React.FC = () => {
   const [dispatchSecondsLeft, setDispatchSecondsLeft] = useState(DISPATCH_TOTAL_SECONDS);
   const [customerName, setCustomerName] = useState('');
   const [customerEmail, setCustomerEmail] = useState('');
+  const [customerComment, setCustomerComment] = useState('');
   const [invalidImageFallback, setInvalidImageFallback] = useState<InvalidImageFallbackState | null>(null);
   const containerRefs = useRef<(HTMLDivElement | null)[]>([]);
   const nextId = useRef(0);
@@ -288,27 +289,52 @@ const EstimateAnalysis: React.FC = () => {
         'pdr',
       );
 
-      if (selectedPanels.length > 1 && analysis.panels.length > 0) {
-        const bds: PanelBreakdown[] = analysis.panels.map((p, i) => {
-          const raw = selectedPanels[i] as string | undefined;
-          const label = raw ? (PANEL_LABEL_MAP[raw] ?? normalizePanel(p.panel_name)) : normalizePanel(p.panel_name);
-          const topDent = p.dents?.[0];
+      // Build per-panel breakdown from selectedPanels (always covers all user-selected panels)
+      let panelBreakdownData: PanelBreakdown[] = [];
+      if (selectedPanels.length > 1) {
+        const usedPanelIndexes = new Set<number>();
+        let remainingDents = Math.max(0, analysis.summary.total_dents || 0);
+
+        panelBreakdownData = selectedPanels.map((selectedPanel, i) => {
+          const selectedLabel = PANEL_LABEL_MAP[selectedPanel] ?? normalizePanel(String(selectedPanel));
+
+          const findMatchByLabel = analysis.panels.findIndex((p, idx) => {
+            if (usedPanelIndexes.has(idx)) return false;
+            return normalizePanel(p.panel_name) === selectedLabel;
+          });
+
+          let panelIdx = findMatchByLabel;
+          if (panelIdx < 0 && i < analysis.panels.length && !usedPanelIndexes.has(i)) {
+            panelIdx = i;
+          }
+
+          const p = panelIdx >= 0 ? analysis.panels[panelIdx] : undefined;
+          if (panelIdx >= 0) usedPanelIndexes.add(panelIdx);
+
+          const topDent = p?.dents?.[0];
           const sizeCm = topDent?.size_cm ?? 3;
           const depthRaw = (topDent?.depth ?? 'Shallow') as PanelBreakdown['severity'];
           const depth: PanelBreakdown['severity'] = depthRaw === 'Deep' ? 'Deep' : depthRaw === 'Medium' ? 'Medium' : 'Shallow';
+
+          const dc = typeof p?.dent_count === 'number'
+            ? p.dent_count
+            : remainingDents > 0 ? 1 : 0;
+          remainingDents = Math.max(0, remainingDents - dc);
+
           return {
-            panelLabel: label,
-            dentCount: p.dent_count,
-            damageType: p.dent_count > 0 ? 'Minor Dent' : 'No damage',
+            panelLabel: selectedLabel,
+            dentCount: dc,
+            damageType: dc > 0 ? 'Minor Dent' : 'No damage',
             sizePretty: `~${sizeCm}–${sizeCm + 2} cm`,
-            depth: depth,
+            depth,
             severity: depth,
-            repairTime: p.dent_count <= 1 ? '30–60 min' : p.dent_count <= 3 ? '1–2 hours' : '2–3 hours',
-            minCost: p.estimated_panel_cost_AUD?.min ?? 118,
-            maxCost: p.estimated_panel_cost_AUD?.max ?? 144,
+            repairTime: dc <= 1 ? '30–60 min' : dc <= 3 ? '1–2 hours' : '2–3 hours',
+            minCost: p?.estimated_panel_cost_AUD?.min ?? 118,
+            maxCost: p?.estimated_panel_cost_AUD?.max ?? 144,
           };
         });
-        setPanelBreakdown(bds);
+
+        setPanelBreakdown(panelBreakdownData);
       }
 
       const topPanel = [...analysis.panels].sort((a, b) => b.dent_count - a.dent_count)[0];
@@ -321,12 +347,18 @@ const EstimateAnalysis: React.FC = () => {
       const isHail = detectHailDamage(analysis);
       const hasPaintDamage = !!(analysis.flags?.pdr_incompatible) || analysis.summary.total_scratches > 0;
 
-      const panelCostSum = analysis.panels.reduce(
+      // Cost sum: prefer breakdown (covers all selected panels) over AI panels alone
+      const breakdownCostSum = panelBreakdownData.reduce(
+        (acc, p) => ({ min: acc.min + p.minCost, max: acc.max + p.maxCost }),
+        { min: 0, max: 0 }
+      );
+      const aiPanelCostSum = analysis.panels.reduce(
         (acc, p) => ({ min: acc.min + (p.estimated_panel_cost_AUD?.min || 0), max: acc.max + (p.estimated_panel_cost_AUD?.max || 0) }),
         { min: 0, max: 0 }
       );
-      const estMin = panelCostSum.min > 0 ? panelCostSum.min : (analysis.summary.estimated_total_cost_AUD?.min ?? 225);
-      const estMax = panelCostSum.max > 0 ? panelCostSum.max : (analysis.summary.estimated_total_cost_AUD?.max ?? 395);
+      const bestSum = breakdownCostSum.min > 0 ? breakdownCostSum : aiPanelCostSum;
+      const estMin = bestSum.min > 0 ? bestSum.min : (analysis.summary.estimated_total_cost_AUD?.min ?? 225);
+      const estMax = bestSum.max > 0 ? bestSum.max : (analysis.summary.estimated_total_cost_AUD?.max ?? 395);
 
       console.info('[estimate-ai-source]', {
         _source: (analysis as any)._source || 'unknown',
@@ -341,6 +373,7 @@ const EstimateAnalysis: React.FC = () => {
 
       const payload = {
         analysis,
+        panelBreakdownData: panelBreakdownData.length > 0 ? panelBreakdownData : undefined,
         damageType: isHail ? 'hail' : hasPaintDamage ? 'paint' : 'pdr',
         estimateMin: estMin,
         estimateMax: estMax,
@@ -475,6 +508,7 @@ const EstimateAnalysis: React.FC = () => {
           customer: {
             name: customerName.trim(),
             email: customerEmail.trim(),
+            comment: customerComment.trim() || undefined,
           },
           userConfirmed: {
             panelName: analysisInfo.panelName,
@@ -483,6 +517,7 @@ const EstimateAnalysis: React.FC = () => {
             damageLevel: analysisInfo.level,
             name: customerName.trim(),
             email: customerEmail.trim(),
+            comment: customerComment.trim() || undefined,
           },
         };
         sessionStorage.setItem('estimateData', JSON.stringify(next));
@@ -907,7 +942,7 @@ const EstimateAnalysis: React.FC = () => {
 
                 {analysisInfo && stage >= 3 && (
                   <p className="text-[11px] text-[#9ca3af] mb-2.5 leading-relaxed">
-                    Drag the marker on your photo to position it over the dent. Confirm when ready.
+                    Tap each photo to mark the dent location. Drag to reposition.
                   </p>
                 )}
 
@@ -988,17 +1023,12 @@ const EstimateAnalysis: React.FC = () => {
                           <div className="absolute bottom-2 left-2 right-2 flex items-center gap-1.5">
                             {detected ? (
                               photoMarkers.length > 0 ? (
-                                <>
-                                  <span className="inline-flex items-center gap-1 bg-white/90 text-amber-700 border border-amber-200 text-[10px] font-semibold px-2 py-0.5 rounded-full shadow-sm backdrop-blur-sm">
-                                    ✏ Edit Markers
-                                  </span>
-                                  <span className="inline-flex items-center gap-1 bg-amber-500/90 text-white text-[10px] font-semibold px-2 py-0.5 rounded-full">
-                                    {photoMarkers.length} damage{photoMarkers.length !== 1 ? 's' : ''} marked
-                                  </span>
-                                </>
+                                <span className="inline-flex items-center gap-1 bg-white/90 text-[#374151] border border-[#e5e7eb] text-[10px] font-medium px-2 py-0.5 rounded-full shadow-sm backdrop-blur-sm">
+                                  {photoMarkers.length} damage location{photoMarkers.length !== 1 ? 's' : ''} marked
+                                </span>
                               ) : (
-                                <span className="inline-flex items-center gap-1.5 bg-white/90 text-[#4f46e5] border border-[#dbe4ff] text-[10px] font-semibold px-2.5 py-1 rounded-full shadow-sm backdrop-blur-sm mx-auto">
-                                  👆 Tap to mark where the dent is
+                                <span className="inline-flex items-center bg-white/90 text-[#6b7280] border border-[#e5e7eb] text-[10px] font-medium px-2.5 py-1 rounded-full shadow-sm backdrop-blur-sm mx-auto">
+                                  Tap to mark where the dent is
                                 </span>
                               )
                             ) : (
@@ -1023,10 +1053,7 @@ const EstimateAnalysis: React.FC = () => {
                 {/* ── AI Detection Summary (multi-panel) ── */}
                 {isMultiPanel && analysisInfo && stage >= 3 && (
                   <div className="mt-4 bg-white rounded-2xl p-4 shadow-sm border border-[#e5e7eb]">
-                    <p className="text-sm font-bold text-[#111827] mb-3 flex items-center gap-2">
-                      <span className="w-5 h-5 rounded-full bg-[#4f46e5] text-white text-[11px] font-bold flex items-center justify-center flex-shrink-0">ⓘ</span>
-                      AI Detection Summary
-                    </p>
+                    <p className="text-sm font-bold text-[#111827] mb-3">AI Detection Summary</p>
                     <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 text-center">
                       {[
                         { value: photoUrls.length, label: 'Panels Analyzed' },
@@ -1047,8 +1074,7 @@ const EstimateAnalysis: React.FC = () => {
                 {/* ── Damage Breakdown table (multi-panel) ── */}
                 {isMultiPanel && panelBreakdown.length > 0 && stage >= 3 && (
                   <div className="mt-4 bg-white rounded-2xl overflow-hidden shadow-sm border border-[#e5e7eb]">
-                    <div className="px-4 py-3 border-b border-[#f3f4f6] flex items-center gap-2">
-                      <span className="text-[#4f46e5]">🔧</span>
+                    <div className="px-4 py-3 border-b border-[#f3f4f6]">
                       <p className="text-sm font-bold text-[#111827]">Damage Breakdown</p>
                     </div>
                     <div className="overflow-x-auto">
@@ -1095,90 +1121,15 @@ const EstimateAnalysis: React.FC = () => {
                       </table>
                     </div>
                     <div className="px-4 py-3 border-t border-[#f3f4f6] bg-[#f8faff]">
-                      <p className="text-[11px] text-[#6b7280]">✦ AI analysis subject to final review and approval by a certified technician.</p>
+                      <p className="text-[11px] text-[#6b7280]">AI analysis subject to final review and approval by a certified technician.</p>
                     </div>
                   </div>
                 )}
 
-                {/* ── Damage Info Panel + Confirm ── */}
+                {/* ── Analysis Result + Contact ── */}
                 {analysisInfo && stage >= 3 && (
                   <div className="mt-4 bg-white rounded-2xl p-4 shadow-sm border border-[#e5e7eb]">
-                    <p className="text-xs font-bold text-[#111827] mb-3 flex items-center gap-2">
-                      <span className="w-2 h-2 rounded-full bg-amber-400 inline-block" />
-                      Damage Summary
-                    </p>
-
-                    <div className="grid grid-cols-3 gap-3 mb-3">
-                      <div className="bg-[#f8faff] rounded-xl p-2.5">
-                        <p className="text-[9px] text-[#9ca3af] uppercase tracking-wide mb-0.5">Panel</p>
-                        <select
-                          value={analysisInfo.panelName}
-                          onChange={handlePanelChange}
-                          className="w-full bg-white border border-[#dbe4ff] rounded-lg text-xs font-bold text-[#111827] px-2 py-1.5 outline-none focus:border-[#4f46e5]"
-                        >
-                          {PANEL_OPTIONS.map((opt) => (
-                            <option key={opt} value={opt}>{opt}</option>
-                          ))}
-                        </select>
-                      </div>
-                      <div className="bg-[#f8faff] rounded-xl p-2.5">
-                        <p className="text-[9px] text-[#9ca3af] uppercase tracking-wide mb-0.5">Type</p>
-                        <select
-                          value={analysisInfo.damageType}
-                          onChange={handleTypeChange}
-                          className="w-full bg-white border border-[#dbe4ff] rounded-lg text-xs font-bold text-[#111827] px-2 py-1.5 outline-none focus:border-[#4f46e5]"
-                        >
-                          {TYPE_OPTIONS.map((opt) => (
-                            <option key={opt} value={opt}>{opt}</option>
-                          ))}
-                        </select>
-                      </div>
-                      <div className="bg-[#f8faff] rounded-xl p-2.5">
-                        <p className="text-[9px] text-[#9ca3af] uppercase tracking-wide mb-0.5">Marked</p>
-                        <p className="text-xs font-bold text-[#111827]">{markers.reduce((s, a) => s + a.length, 0)}</p>
-                      </div>
-                    </div>
-
-                    <p className="text-[9px] text-[#9ca3af] uppercase tracking-wide mb-2">Damage Level</p>
-                    <div className="flex gap-2 mb-4">
-                      {(['Shallow', 'Medium', 'Deep'] as const).map((lvl) => {
-                        const active = analysisInfo.level === lvl;
-                        const { color, desc } = LEVEL_META[lvl];
-                        return (
-                          <div
-                            key={lvl}
-                            className={`flex-1 rounded-xl px-2 py-2.5 text-center border-2 transition-all ${
-                              active ? 'shadow-sm' : 'opacity-35'
-                            }`}
-                            style={active ? { borderColor: color, background: color + '18' } : { borderColor: '#f3f4f6' }}
-                          >
-                            <p className="text-[11px] font-extrabold" style={{ color: active ? color : '#9ca3af' }}>{lvl}</p>
-                            <p className="text-[9px] mt-0.5 leading-tight" style={{ color: active ? color : '#c4c9d4' }}>{desc}</p>
-                          </div>
-                        );
-                      })}
-                    </div>
-
-                    <div className="mb-3 rounded-xl border border-[#e5e7eb] bg-[#f8faff] px-3 py-2.5">
-                      <div className="flex flex-wrap items-center justify-between gap-2">
-                        <div className="flex items-center gap-2">
-                          <span className="text-[#4f46e5]">✦</span>
-                          <p className="text-xs font-medium text-[#111827]">
-                            {bottomData
-                              ? 'Our AI has already detected the dent and prepared your photo for analysis.'
-                              : 'Analyzing your photo…'}
-                          </p>
-                        </div>
-                        {bottomData && (
-                          <div className="flex items-center gap-4">
-                            <div><p className="text-[10px] text-[#9ca3af]">Damage Type</p><p className="text-xs font-bold text-[#111827]">{bottomData.damageCategory}</p></div>
-                            <div><p className="text-[10px] text-[#9ca3af]">Location</p><p className="text-xs font-bold text-[#111827]">{bottomData.location}</p></div>
-                            <div><p className="text-[10px] text-[#9ca3af]">Est. Repair Time</p><p className="text-xs font-bold text-[#111827]">{bottomData.repairTime}</p></div>
-                          </div>
-                        )}
-                      </div>
-                    </div>
-
+                    {/* Contact fields */}
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5 mb-3">
                       <label className="block">
                         <span className="text-[10px] text-[#9ca3af] uppercase tracking-wide mb-1 block">Name</span>
@@ -1187,7 +1138,7 @@ const EstimateAnalysis: React.FC = () => {
                           value={customerName}
                           onChange={(e) => setCustomerName(e.target.value)}
                           placeholder="Your full name"
-                          className="w-full rounded-xl border border-[#dbe4ff] bg-white px-3 py-2.5 text-sm text-[#111827] outline-none focus:border-[#4f46e5]"
+                          className="w-full rounded-xl border border-[#e5e7eb] bg-white px-3 py-2.5 text-sm text-[#111827] outline-none focus:border-[#4f46e5] transition-colors"
                         />
                       </label>
                       <label className="block">
@@ -1197,9 +1148,21 @@ const EstimateAnalysis: React.FC = () => {
                           value={customerEmail}
                           onChange={(e) => setCustomerEmail(e.target.value)}
                           placeholder="you@example.com"
-                          className="w-full rounded-xl border border-[#dbe4ff] bg-white px-3 py-2.5 text-sm text-[#111827] outline-none focus:border-[#4f46e5]"
+                          className="w-full rounded-xl border border-[#e5e7eb] bg-white px-3 py-2.5 text-sm text-[#111827] outline-none focus:border-[#4f46e5] transition-colors"
                         />
                       </label>
+                    </div>
+
+                    {/* Dispute comment */}
+                    <div className="mb-4">
+                      <p className="text-[10px] text-[#9ca3af] uppercase tracking-wide mb-1">Analysis look incorrect? (optional)</p>
+                      <textarea
+                        value={customerComment}
+                        onChange={(e) => setCustomerComment(e.target.value)}
+                        placeholder="Add a comment or correction — our bodyshop partners will review it directly."
+                        rows={2}
+                        className="w-full rounded-xl border border-[#e5e7eb] bg-white px-3 py-2.5 text-sm text-[#111827] outline-none focus:border-[#4f46e5] resize-none transition-colors placeholder:text-[#c4c9d4]"
+                      />
                     </div>
 
                     {!isContactValid && (
@@ -1209,15 +1172,15 @@ const EstimateAnalysis: React.FC = () => {
                     <button
                       onClick={handleAdvance}
                       disabled={!isContactValid}
-                      className={`w-full py-3.5 rounded-xl text-white text-sm font-bold shadow-md transition-all flex items-center justify-center gap-2 ${
+                      className={`w-full py-3.5 rounded-xl text-sm font-bold transition-all flex items-center justify-center gap-2 ${
                         isContactValid
-                          ? 'bg-gradient-to-r from-[#4f46e5] to-[#7c3aed] hover:shadow-lg hover:brightness-105'
-                          : 'bg-[#b8bed1] cursor-not-allowed'
+                          ? 'bg-[#111827] text-white hover:bg-[#1f2937]'
+                          : 'bg-[#f3f4f6] text-[#9ca3af] cursor-not-allowed'
                       }`}
                     >
-                      ✓ Confirm & Get Estimate
+                      Send to Bodyshops
                       <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M9 5l7 7-7 7" />
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
                       </svg>
                     </button>
                   </div>
