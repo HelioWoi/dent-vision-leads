@@ -72,10 +72,13 @@ const INVALID_IMAGE_FALLBACK_KEY = 'invalidImageValidationFallback';
 const normalizePanel = (value: string): string => {
   const lower = value.toLowerCase();
   if (lower.includes('bonnet') || lower.includes('hood')) return 'Bonnet';
-  if (lower.includes('guard') || lower.includes('fender') || lower.includes('front') || lower.includes('rear')) return 'Guard (Front/Rear)';
+  if (lower.includes('boot') || lower.includes('trunk') || lower.includes('boot_lid')) return 'Boot';
   if (lower.includes('door')) return 'Door/s';
+  if (lower.includes('bumper')) return 'Bumper';
+  if (lower.includes('quarter') || lower.includes('guard') || lower.includes('fender')) return 'Guard (Front/Rear)';
   if (lower.includes('roof')) return 'Roof';
-  if (lower.includes('boot') || lower.includes('trunk')) return 'Boot';
+  if (lower.includes('sill')) return 'Sill';
+  if (lower.includes('front') || lower.includes('rear')) return 'Guard (Front/Rear)';
   return 'Door/s';
 };
 
@@ -299,7 +302,11 @@ const EstimateAnalysis: React.FC = () => {
       sessionStorage.setItem('estimateData', JSON.stringify(payload));
       setBottomData({ damageCategory, location, repairTime });
       const cnt = topPanel?.dent_count ?? analysis.summary.total_dents;
-      const lvl: AnalysisInfo['level'] = cnt <= 2 ? 'Shallow' : cnt <= 4 ? 'Medium' : 'Deep';
+      const severityStr = (analysis.summary.overall_severity || 'Minor').toLowerCase();
+      const lvl: AnalysisInfo['level'] =
+        severityStr === 'severe' ? 'Deep' :
+        (severityStr === 'moderate' || severityStr === 'medium') ? 'Medium' :
+        'Shallow';
       const pNameRaw = topPanel?.panel_name.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase()) ?? 'Door';
       setAnalysisInfo({ panelName: normalizePanel(pNameRaw), damageType: isHail ? 'Hail Damage' : 'PDR Dent', dentCount: cnt, level: lvl });
       setStage(3);
