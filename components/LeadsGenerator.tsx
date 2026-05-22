@@ -158,7 +158,10 @@ const LeadsGenerator: React.FC = () => {
       const damageCategory = dents <= 2 ? 'Minor Dent' : dents <= 5 ? 'Moderate Dent' : 'Multiple Dents';
       const repairTime = dents <= 2 ? '1–2 hours' : dents <= 5 ? '1–3 hours' : '3–5 hours';
       const damageTypeLabel = result.damage_type === 'hail' ? 'Hail Damage' : 'PDR Dent';
-      const damageLevel = dents <= 2 ? 'Shallow' : dents <= 5 ? 'Medium' : 'Deep';
+      const aiSeverity = output.fullAnalysis.summary.overall_severity || '';
+      const damageLevel = aiSeverity === 'Severe' ? 'Deep'
+        : aiSeverity === 'Moderate' ? 'Medium'
+        : dents <= 2 ? 'Shallow' : dents <= 5 ? 'Medium' : 'Deep';
 
       const LS_PANEL_LABELS: Record<string, string> = {
         bonnet: 'Bonnet', guard: 'Guard (Front/Rear)', doors: 'Doors (All)',
@@ -182,8 +185,8 @@ const LeadsGenerator: React.FC = () => {
               depth,
               severity: depth as 'Shallow' | 'Medium' | 'Deep',
               repairTime: dc <= 1 ? '30–60 min' : dc <= 3 ? '1–2 hours' : '2–3 hours',
-              minCost: p?.estimated_panel_cost_AUD?.min ?? 118,
-              maxCost: p?.estimated_panel_cost_AUD?.max ?? 144,
+              minCost: p?.estimated_panel_cost_AUD?.min || 150,
+              maxCost: p?.estimated_panel_cost_AUD?.max || 183,
             };
           })
         : undefined;

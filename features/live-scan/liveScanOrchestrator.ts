@@ -179,9 +179,7 @@ export async function runLiveScanAnalysis({
           if (dentSizeMm > maxDentSize) maxDentSize = dentSizeMm;
         }
 
-        if (maxDentSize === 0) {
-          maxDentSize = estimateFallbackDentSizeMm(panelDentCount);
-        }
+        // Pass maxDentSize=0 when no real size data so engine uses sizeCategory fallback (45mm→$150)
 
         const panelSizeCategory = mapDentSizeToCategory(maxDentSize);
         const severityIndicatesLarge =
@@ -228,9 +226,7 @@ export async function runLiveScanAnalysis({
       }
     }
 
-    if (maxDentSize === 0) {
-      maxDentSize = estimateFallbackDentSizeMm(effectiveTotalDents);
-    }
+    // Pass maxDentSize=0 when no real size data so engine uses sizeCategory fallback
 
     const sizeCategory = mapDentSizeToCategory(maxDentSize);
     const severityIndicatesLarge =

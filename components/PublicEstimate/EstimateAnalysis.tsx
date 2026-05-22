@@ -410,9 +410,7 @@ const EstimateAnalysis: React.FC = () => {
           if (dentSizeMm > maxDentSizeMm) maxDentSizeMm = dentSizeMm;
         }
       }
-      if (maxDentSizeMm === 0) {
-        maxDentSizeMm = estimateFallbackDentSizeMm(dentCount);
-      }
+      // Keep maxDentSizeMm=0 when no real AI size data — engine will use sizeCategory fallback (45mm→$150)
       const sizeCategory = mapDentSizeToCategory(maxDentSizeMm);
       const severityIndicatesLarge =
         analysis.summary.overall_severity === 'Moderate' ||
@@ -430,12 +428,10 @@ const EstimateAnalysis: React.FC = () => {
         overallSeverity: analysis.summary.overall_severity as 'Minor' | 'Moderate' | 'Severe',
       }).priceRange;
 
-      const estMin = bestSum.min > 0
-        ? bestSum.min
-        : (analysis.summary.estimated_total_cost_AUD?.min ?? deterministicPrice.min);
-      const estMax = bestSum.max > 0
-        ? bestSum.max
-        : (analysis.summary.estimated_total_cost_AUD?.max ?? deterministicPrice.max);
+      // Always use deterministic pricing engine to keep local/prod consistent.
+      // AI's raw estimated_panel_cost_AUD varies per call and is NOT used as price source.
+      const estMin = breakdownCostSum.min > 0 ? breakdownCostSum.min : deterministicPrice.min;
+      const estMax = breakdownCostSum.max > 0 ? breakdownCostSum.max : deterministicPrice.max;
 
       console.info('[estimate-ai-source]', {
         _source: (analysis as any)._source || 'unknown',
