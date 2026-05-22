@@ -146,7 +146,13 @@ export async function runLiveScanAnalysis({
   const hasPaintDamage =
     fullAnalysis.flags.pdr_incompatible && fullAnalysis.summary.total_scratches > 0;
 
-  const totalDents = fullAnalysis.summary.total_dents;
+  const totalDents = fullAnalysis.panels.reduce((sum, panel) => {
+    const dentCount = typeof panel.dent_count === 'number'
+      ? panel.dent_count
+      : (panel.dents?.length || 0);
+    return sum + Math.max(0, dentCount);
+  }, 0);
+  fullAnalysis.summary.total_dents = totalDents;
   const isHailDetected = detectHailDamage(fullAnalysis);
   const hailCategory = isHailDetected ? getHailCategory(totalDents) : undefined;
   const hasPaintNeeded = fullAnalysis.flags.pdr_incompatible || fullAnalysis.summary.total_scratches > 0;

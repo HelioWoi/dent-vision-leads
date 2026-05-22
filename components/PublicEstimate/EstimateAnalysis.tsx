@@ -163,6 +163,26 @@ const EstimateAnalysis: React.FC = () => {
       { top: 38, left: 62 }, { top: 55, left: 38 }, { top: 28, left: 55 },
       { top: 63, left: 72 }, { top: 45, left: 25 },
     ];
+    let estimateSource: string | undefined;
+    try {
+      const estimateRaw = sessionStorage.getItem('estimateData');
+      if (estimateRaw) {
+        estimateSource = (JSON.parse(estimateRaw) as { source?: string }).source;
+      }
+    } catch {
+      estimateSource = undefined;
+    }
+
+    if (estimateSource === 'live-scan') {
+      const nextMarkers = photoUrls.map(() => [] as { id: number; top: number; left: number }[]);
+      for (let i = 0; i < count; i += 1) {
+        const photoIdx = i % photoUrls.length;
+        nextMarkers[photoIdx].push({ id: nextId.current++, ...spread[i % spread.length] });
+      }
+      setMarkers(nextMarkers);
+      return;
+    }
+
     setMarkers(photoUrls.map(() =>
       Array.from({ length: count }, (_, i) => ({ id: nextId.current++, ...spread[i] }))
     ));
@@ -201,12 +221,14 @@ const EstimateAnalysis: React.FC = () => {
             damageCategory?: string;
             location?: string;
             repairTime?: string;
+            panelBreakdownData?: PanelBreakdown[];
           };
           setBottomData({
             damageCategory: estimate.damageCategory || 'Minor Dent',
             location: estimate.location || dispatchMode.panelName || 'Vehicle panel',
             repairTime: estimate.repairTime || '1–2 hours',
           });
+          setPanelBreakdown(Array.isArray(estimate.panelBreakdownData) ? estimate.panelBreakdownData : []);
         }
 
         setZip(initialZip);
@@ -1123,6 +1145,28 @@ const EstimateAnalysis: React.FC = () => {
                     <div className="px-4 py-3 border-t border-[#f3f4f6] bg-[#f8faff]">
                       <p className="text-[11px] text-[#6b7280]">AI analysis subject to final review and approval by a certified technician.</p>
                     </div>
+                  </div>
+                )}
+
+                {/* ── Damage Summary (single-panel) ── */}
+                {!isMultiPanel && analysisInfo && stage >= 3 && (
+                  <div className="mt-4 bg-white rounded-2xl p-4 shadow-sm border border-[#e5e7eb]">
+                    <p className="text-sm font-bold text-[#111827] mb-3">Damage Summary</p>
+                    <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 text-center">
+                      {[
+                        { value: analysisInfo.panelName, label: 'Panel' },
+                        { value: analysisInfo.damageType, label: 'Type' },
+                        { value: markers.reduce((s, a) => s + a.length, 0), label: 'Marked Dents' },
+                        { value: analysisInfo.level, label: 'Damage Level', color: analysisInfo.level === 'Deep' ? '#ef4444' : analysisInfo.level === 'Medium' ? '#f59e0b' : '#22c55e' },
+                        { value: bottomData?.repairTime ?? '1–2 hours', label: 'Est. Repair Time' },
+                      ].map((item) => (
+                        <div key={item.label} className="bg-[#f8faff] rounded-xl p-2.5">
+                          <p className="text-sm font-extrabold" style={item.color ? { color: item.color } : { color: '#111827' }}>{item.value}</p>
+                          <p className="text-[10px] text-[#9ca3af] mt-0.5 leading-tight">{item.label}</p>
+                        </div>
+                      ))}
+                    </div>
+                    <p className="text-[11px] text-[#6b7280] mt-3">AI analysis subject to final review and approval by a certified technician.</p>
                   </div>
                 )}
 
