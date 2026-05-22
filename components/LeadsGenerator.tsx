@@ -152,14 +152,49 @@ const LeadsGenerator: React.FC = () => {
       (window as any).__leadUploadFiles = frames;
       (window as any).__leadSelectedPanels = selectedPanels;
       sessionStorage.setItem('liveScanFullAnalysis', JSON.stringify(output.fullAnalysis));
+
       const result = output.liveScanResult;
-      const estimateMin = Number(result.price_range?.min || result.estimated_cost?.min || 0);
-      const estimateMax = Number(result.price_range?.max || result.estimated_cost?.max || estimateMin);
       const dents = Number(result.dent_count_estimate || 1);
       const damageCategory = dents <= 2 ? 'Minor Dent' : dents <= 5 ? 'Moderate Dent' : 'Multiple Dents';
       const repairTime = dents <= 2 ? '1–2 hours' : dents <= 5 ? '1–3 hours' : '3–5 hours';
       const damageTypeLabel = result.damage_type === 'hail' ? 'Hail Damage' : 'PDR Dent';
       const damageLevel = dents <= 2 ? 'Shallow' : dents <= 5 ? 'Medium' : 'Deep';
+
+      const LS_PANEL_LABELS: Record<string, string> = {
+        bonnet: 'Bonnet', guard: 'Guard (Front/Rear)', doors: 'Doors (All)',
+        roof: 'Roof', boot: 'Boot', bumper: 'Bumper', cant_rail: 'Cant Rail',
+      };
+
+      // Build per-panel breakdown — same pattern as upload flow
+      const panelBreakdownData = selectedPanels.length > 1
+        ? selectedPanels.map((sp, i) => {
+            const label = LS_PANEL_LABELS[sp] ?? sp.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+            const p = output.fullAnalysis.panels[i];
+            const topDent = p?.dents?.[0];
+            const sizeCm = topDent?.size_cm ?? 3;
+            const dc = typeof p?.dent_count === 'number' ? p.dent_count : dents > 0 ? 1 : 0;
+            const depth = topDent?.depth === 'Deep' ? 'Deep' : topDent?.depth === 'Medium' ? 'Medium' : 'Shallow';
+            return {
+              panelLabel: label,
+              dentCount: dc,
+              damageType: dc > 0 ? 'Minor Dent' : 'No damage',
+              sizePretty: `~${sizeCm}–${sizeCm + 2} cm`,
+              depth,
+              severity: depth as 'Shallow' | 'Medium' | 'Deep',
+              repairTime: dc <= 1 ? '30–60 min' : dc <= 3 ? '1–2 hours' : '2–3 hours',
+              minCost: p?.estimated_panel_cost_AUD?.min ?? 118,
+              maxCost: p?.estimated_panel_cost_AUD?.max ?? 144,
+            };
+          })
+        : undefined;
+
+      // Cost: use breakdown sum when multi-panel, otherwise fall back to liveScanResult pricing
+      const bSum = panelBreakdownData?.reduce(
+        (acc, p) => ({ min: acc.min + p.minCost, max: acc.max + p.maxCost }),
+        { min: 0, max: 0 }
+      );
+      const estimateMin = bSum && bSum.min > 0 ? bSum.min : Number(result.price_range?.min || result.estimated_cost?.min || 0);
+      const estimateMax = bSum && bSum.max > 0 ? bSum.max : Number(result.price_range?.max || result.estimated_cost?.max || estimateMin);
 
       sessionStorage.setItem(
         'estimateData',
@@ -175,6 +210,7 @@ const LeadsGenerator: React.FC = () => {
           repairTime,
           zip,
           source: 'live-scan',
+          panelBreakdownData: panelBreakdownData ?? undefined,
         })
       );
 
