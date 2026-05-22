@@ -248,8 +248,11 @@ const EstimateAnalysis: React.FC = () => {
         return;
       }
 
+      const selectedPanels = ((window as any).__leadSelectedPanels as PanelType[] | undefined) || [];
       const panelResult = await identifyPanelsFromImages(verified);
-      const panels = panelResult.panels.length ? panelResult.panels : [PanelType.Doors];
+      const panels = selectedPanels.length ? selectedPanels
+        : panelResult.panels.length ? panelResult.panels
+        : [PanelType.Doors];
 
       const analysis = await analyzeDents(
         verified,
@@ -270,8 +273,12 @@ const EstimateAnalysis: React.FC = () => {
       const isHail = detectHailDamage(analysis);
       const hasPaintDamage = !!(analysis.flags?.pdr_incompatible) || analysis.summary.total_scratches > 0;
 
-      const estMin = analysis.summary.estimated_total_cost_AUD?.min ?? 225;
-      const estMax = analysis.summary.estimated_total_cost_AUD?.max ?? 395;
+      const panelCostSum = analysis.panels.reduce(
+        (acc, p) => ({ min: acc.min + (p.estimated_panel_cost_AUD?.min || 0), max: acc.max + (p.estimated_panel_cost_AUD?.max || 0) }),
+        { min: 0, max: 0 }
+      );
+      const estMin = panelCostSum.min > 0 ? panelCostSum.min : (analysis.summary.estimated_total_cost_AUD?.min ?? 225);
+      const estMax = panelCostSum.max > 0 ? panelCostSum.max : (analysis.summary.estimated_total_cost_AUD?.max ?? 395);
 
       console.info('[estimate-ai-source]', {
         _source: (analysis as any)._source || 'unknown',

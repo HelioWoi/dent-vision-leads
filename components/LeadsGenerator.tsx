@@ -5,6 +5,7 @@ import DarkFooter from './DarkFooter';
 import LiveScanPanelSelector from './LiveScanPanelSelector';
 import LiveScanView from './LiveScanView';
 import LiveScanPauseView from './LiveScanPauseView';
+import UploadMultiPanelModal from './UploadMultiPanelModal';
 import { verifyIsCarImage } from '../services/geminiServiceAdapter';
 import { PanelType, VehicleType } from '../types';
 import { runLiveScanAnalysis } from '../features/live-scan/liveScanOrchestrator';
@@ -33,6 +34,9 @@ const LeadsGenerator: React.FC = () => {
   const [showLiveScanPermissionModal, setShowLiveScanPermissionModal] = useState(false);
   const [requestingLiveScanPermissions, setRequestingLiveScanPermissions] = useState(false);
   const [liveScanPermissionError, setLiveScanPermissionError] = useState<string | null>(null);
+  const [showUploadPanelSelector, setShowUploadPanelSelector] = useState(false);
+  const [showUploadMultiPanel, setShowUploadMultiPanel] = useState(false);
+  const [uploadSelectedPanels, setUploadSelectedPanels] = useState<PanelType[]>([]);
   const [showLiveScanPanelSelector, setShowLiveScanPanelSelector] = useState(false);
   const [showLiveScanActivationModal, setShowLiveScanActivationModal] = useState(false);
   const [showLiveScanView, setShowLiveScanView] = useState(false);
@@ -231,13 +235,8 @@ const LeadsGenerator: React.FC = () => {
   };
 
   const executeAction = (action: PendingConsentAction) => {
-    if (action.type === 'open-file') {
-      fileInputRef.current?.click();
-      return;
-    }
-
-    if (action.type === 'open-camera') {
-      cameraInputRef.current?.click();
+    if (action.type === 'open-file' || action.type === 'open-camera') {
+      setShowUploadPanelSelector(true);
       return;
     }
 
@@ -286,6 +285,21 @@ const LeadsGenerator: React.FC = () => {
   const closeConsent = () => {
     setShowConsentModal(false);
     setPendingConsentAction(null);
+  };
+
+  const handleUploadPanelSelect = (panels: PanelType[]) => {
+    setUploadSelectedPanels(panels);
+    setShowUploadPanelSelector(false);
+    setShowUploadMultiPanel(true);
+  };
+
+  const handleUploadPhotosReady = (files: File[], panels: PanelType[]) => {
+    (window as any).__leadUploadFiles = files;
+    (window as any).__leadSelectedPanels = panels;
+    setHasFiles(files.length > 0);
+    setShowUploadMultiPanel(false);
+    setUploadSelectedPanels([]);
+    if (files.length > 0) navigateToFlow();
   };
 
   const handleDrop = (e: React.DragEvent) => {
@@ -917,6 +931,27 @@ const LeadsGenerator: React.FC = () => {
           </div>
         </div>
       </section>
+
+      {/* Upload panel selector modal */}
+      {showUploadPanelSelector && (
+        <LiveScanPanelSelector
+          title="Select Panels"
+          subtitle="Which panels are damaged? Select all that apply."
+          ctaLabel="Next — Upload Photos →"
+          onSelect={handleUploadPanelSelect}
+          onCancel={() => setShowUploadPanelSelector(false)}
+        />
+      )}
+
+      {/* Upload multi-panel photo slots modal */}
+      {showUploadMultiPanel && (
+        <UploadMultiPanelModal
+          panels={uploadSelectedPanels}
+          onConfirm={handleUploadPhotosReady}
+          onBack={() => { setShowUploadMultiPanel(false); setShowUploadPanelSelector(true); }}
+          onCancel={() => { setShowUploadMultiPanel(false); setUploadSelectedPanels([]); }}
+        />
+      )}
 
       <FlowLegalFooter className="mb-8" />
 

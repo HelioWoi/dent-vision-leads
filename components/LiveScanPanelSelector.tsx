@@ -7,6 +7,7 @@ interface LiveScanPanelSelectorProps {
   onCancel: () => void;
   title?: string;
   subtitle?: string;
+  ctaLabel?: string;
 }
 
 const PANEL_OPTIONS = [
@@ -23,7 +24,8 @@ const LiveScanPanelSelector: React.FC<LiveScanPanelSelectorProps> = ({
   onSelect, 
   onCancel,
   title = "Live Scan",
-  subtitle = "Select the damaged panels to analyze"
+  subtitle = "Select the damaged panels to analyze",
+  ctaLabel,
 }) => {
   const [selectedPanels, setSelectedPanels] = useState<PanelType[]>([]);
   
@@ -114,7 +116,7 @@ const LiveScanPanelSelector: React.FC<LiveScanPanelSelectorProps> = ({
               </span>
               <span className="text-gray-400">•</span>
               <span className="text-gray-600">
-                {isLiveScan ? `~${estimatedTime}s` : `${selectedPanels.length * 3} photos`}
+                {isLiveScan ? `~${estimatedTime}s` : `${selectedPanels.length} panel${selectedPanels.length > 1 ? 's' : ''} selected`}
               </span>
             </div>
           ) : (
@@ -148,7 +150,7 @@ const LiveScanPanelSelector: React.FC<LiveScanPanelSelectorProps> = ({
                 : 'bg-gray-100 text-gray-400 border border-gray-200 cursor-not-allowed'
             }`}
           >
-            {isLiveScan ? 'Start Scan' : 'Start Camera'}
+            {ctaLabel ?? (isLiveScan ? 'Start Scan' : 'Start Camera')}
           </button>
         </div>
       </div>

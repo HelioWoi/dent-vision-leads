@@ -588,6 +588,21 @@ const EstimateResults: React.FC = () => {
               </p>
             </div>
 
+            {/* Paint damage notice */}
+            {data.hasPaintDamage && (
+              <div className="bg-orange-50 border border-orange-200 rounded-xl p-4 flex items-start gap-3">
+                <span className="text-xl flex-shrink-0">🎨</span>
+                <div>
+                  <p className="text-sm font-bold text-orange-800">Paint Repair May Be Required</p>
+                  <p className="text-xs text-orange-700 mt-1">
+                    The estimate above (<strong>${aiMid}</strong>) covers the <strong>dent repair (PDR) only.</strong>{' '}
+                    Paint damage was detected — your bodyshop will assess on-site and provide a <strong>separate paint quote</strong> after physical inspection.
+                    Final total will be higher.
+                  </p>
+                </div>
+              </div>
+            )}
+
             {/* Demo notice */}
             {data.isDemo && (
               <div className="bg-blue-50 border border-blue-200 rounded-xl p-4 flex items-start gap-2">
