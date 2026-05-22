@@ -65,6 +65,28 @@ const LEVEL_META = {
   Deep:    { color: '#ef4444', desc: 'Significant depth · May need filler' },
 } as const;
 
+interface PanelBreakdown {
+  panelLabel: string;
+  dentCount: number;
+  damageType: string;
+  sizePretty: string;
+  depth: string;
+  severity: 'Shallow' | 'Medium' | 'Deep';
+  repairTime: string;
+  minCost: number;
+  maxCost: number;
+}
+
+const PANEL_LABEL_MAP: Record<string, string> = {
+  bonnet: 'Bonnet',
+  guard: 'Guard (Front/Rear)',
+  doors: 'Doors (All)',
+  roof: 'Roof',
+  boot: 'Boot',
+  bumper: 'Bumper',
+  cant_rail: 'Cant Rail',
+};
+
 const PANEL_OPTIONS = ['Bonnet', 'Guard (Front/Rear)', 'Door/s', 'Roof', 'Boot'] as const;
 const TYPE_OPTIONS = ['PDR Dent', 'Hail Damage'] as const;
 const DISPATCH_TOTAL_SECONDS = 180;
@@ -91,6 +113,9 @@ const EstimateAnalysis: React.FC = () => {
   const [statusPulse, setStatusPulse] = useState(0);
   const [photoUrls, setPhotoUrls] = useState<string[]>([]);
   const [analysisInfo, setAnalysisInfo] = useState<AnalysisInfo | null>(null);
+  const [panelBreakdown, setPanelBreakdown] = useState<PanelBreakdown[]>([]);
+  const selectedPanelsOnLoad: PanelType[] = ((window as any).__leadSelectedPanels as PanelType[] | undefined) || [];
+  const isMultiPanel = selectedPanelsOnLoad.length > 1;
   const [markers, setMarkers] = useState<{ id: number; top: number; left: number }[][]>([]);
   const [dragging, setDragging] = useState<{ photoIdx: number; markerIdx: number } | null>(null);
   const [dispatchSecondsLeft, setDispatchSecondsLeft] = useState(DISPATCH_TOTAL_SECONDS);
@@ -262,6 +287,29 @@ const EstimateAnalysis: React.FC = () => {
         panels,
         'pdr',
       );
+
+      if (selectedPanels.length > 1 && analysis.panels.length > 0) {
+        const bds: PanelBreakdown[] = analysis.panels.map((p, i) => {
+          const raw = selectedPanels[i] as string | undefined;
+          const label = raw ? (PANEL_LABEL_MAP[raw] ?? normalizePanel(p.panel_name)) : normalizePanel(p.panel_name);
+          const topDent = p.dents?.[0];
+          const sizeCm = topDent?.size_cm ?? 3;
+          const depthRaw = (topDent?.depth ?? 'Shallow') as PanelBreakdown['severity'];
+          const depth: PanelBreakdown['severity'] = depthRaw === 'Deep' ? 'Deep' : depthRaw === 'Medium' ? 'Medium' : 'Shallow';
+          return {
+            panelLabel: label,
+            dentCount: p.dent_count,
+            damageType: p.dent_count > 0 ? 'Minor Dent' : 'No damage',
+            sizePretty: `~${sizeCm}–${sizeCm + 2} cm`,
+            depth: depth,
+            severity: depth,
+            repairTime: p.dent_count <= 1 ? '30–60 min' : p.dent_count <= 3 ? '1–2 hours' : '2–3 hours',
+            minCost: p.estimated_panel_cost_AUD?.min ?? 118,
+            maxCost: p.estimated_panel_cost_AUD?.max ?? 144,
+          };
+        });
+        setPanelBreakdown(bds);
+      }
 
       const topPanel = [...analysis.panels].sort((a, b) => b.dent_count - a.dent_count)[0];
       const dentCount = analysis.summary.total_dents;
@@ -869,6 +917,19 @@ const EstimateAnalysis: React.FC = () => {
                     const detected = stage >= 3;
                     return (
                       <div key={i} className="rounded-2xl border border-[#dbe4ff] bg-[#f8faff] p-1.5">
+                        {isMultiPanel && (
+                          <div className="flex items-center justify-between px-1.5 pb-1.5 mb-1">
+                            <div className="flex items-center gap-1.5">
+                              <span className="w-6 h-6 rounded-lg bg-[#4f46e5] text-white text-[11px] font-bold flex items-center justify-center flex-shrink-0">{i + 1}</span>
+                              <span className="text-[13px] font-semibold text-[#111827]">
+                                {selectedPanelsOnLoad[i] ? (PANEL_LABEL_MAP[selectedPanelsOnLoad[i]] ?? `Panel ${i + 1}`) : `Panel ${i + 1}`}
+                              </span>
+                            </div>
+                            {stage >= 3 && (
+                              <span className="text-[10px] font-semibold text-green-600 bg-green-50 border border-green-200 px-2 py-0.5 rounded-full">Analyzed ✓</span>
+                            )}
+                          </div>
+                        )}
                         <div
                           ref={(el) => { containerRefs.current[i] = el; }}
                           className={`relative rounded-xl overflow-hidden bg-gray-100 select-none ${detected ? 'cursor-crosshair' : ''}`}
@@ -924,16 +985,22 @@ const EstimateAnalysis: React.FC = () => {
                             </div>
                           ))}
 
-                          <div className="absolute bottom-2 left-2 flex items-center gap-1.5">
+                          <div className="absolute bottom-2 left-2 right-2 flex items-center gap-1.5">
                             {detected ? (
-                              <>
-                                <span className="inline-flex items-center gap-1 bg-amber-500/90 text-white text-[10px] font-semibold px-2 py-0.5 rounded-full">
-                                  ⚡ {photoMarkers.length} damage{photoMarkers.length !== 1 ? 's' : ''} marked
+                              photoMarkers.length > 0 ? (
+                                <>
+                                  <span className="inline-flex items-center gap-1 bg-white/90 text-amber-700 border border-amber-200 text-[10px] font-semibold px-2 py-0.5 rounded-full shadow-sm backdrop-blur-sm">
+                                    ✏ Edit Markers
+                                  </span>
+                                  <span className="inline-flex items-center gap-1 bg-amber-500/90 text-white text-[10px] font-semibold px-2 py-0.5 rounded-full">
+                                    {photoMarkers.length} damage{photoMarkers.length !== 1 ? 's' : ''} marked
+                                  </span>
+                                </>
+                              ) : (
+                                <span className="inline-flex items-center gap-1.5 bg-white/90 text-[#4f46e5] border border-[#dbe4ff] text-[10px] font-semibold px-2.5 py-1 rounded-full shadow-sm backdrop-blur-sm mx-auto">
+                                  👆 Tap to mark where the dent is
                                 </span>
-                                <span className="inline-flex items-center gap-1 bg-black/50 text-white/90 text-[9px] font-medium px-2 py-0.5 rounded-full backdrop-blur-sm">
-                                  + tap to add
-                                </span>
-                              </>
+                              )
                             ) : (
                               <span className="inline-flex items-center gap-1 bg-[#4f46e5]/85 text-white text-[10px] font-semibold px-2 py-0.5 rounded-full backdrop-blur-sm">
                                 <span className="w-1.5 h-1.5 rounded-full bg-white/80 animate-pulse" />
@@ -952,6 +1019,86 @@ const EstimateAnalysis: React.FC = () => {
                     );
                   })}
                 </div>
+
+                {/* ── AI Detection Summary (multi-panel) ── */}
+                {isMultiPanel && analysisInfo && stage >= 3 && (
+                  <div className="mt-4 bg-white rounded-2xl p-4 shadow-sm border border-[#e5e7eb]">
+                    <p className="text-sm font-bold text-[#111827] mb-3 flex items-center gap-2">
+                      <span className="w-5 h-5 rounded-full bg-[#4f46e5] text-white text-[11px] font-bold flex items-center justify-center flex-shrink-0">ⓘ</span>
+                      AI Detection Summary
+                    </p>
+                    <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 text-center">
+                      {[
+                        { value: photoUrls.length, label: 'Panels Analyzed' },
+                        { value: markers.reduce((s, a) => s + a.length, 0), label: 'Dents Detected' },
+                        { value: analysisInfo.level, label: 'Avg. Damage Level', color: analysisInfo.level === 'Deep' ? '#ef4444' : analysisInfo.level === 'Medium' ? '#f59e0b' : '#22c55e' },
+                        { value: analysisInfo.level === 'Deep' ? 'High' : analysisInfo.level === 'Medium' ? 'Medium' : 'Low', label: 'Repair Complexity', color: analysisInfo.level === 'Deep' ? '#ef4444' : analysisInfo.level === 'Medium' ? '#f59e0b' : '#22c55e' },
+                        { value: bottomData?.repairTime ?? '1–2 hours', label: 'Est. Repair Time' },
+                      ].map((item) => (
+                        <div key={item.label} className="bg-[#f8faff] rounded-xl p-2.5">
+                          <p className="text-sm font-extrabold" style={item.color ? { color: item.color } : { color: '#111827' }}>{item.value}</p>
+                          <p className="text-[10px] text-[#9ca3af] mt-0.5 leading-tight">{item.label}</p>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* ── Damage Breakdown table (multi-panel) ── */}
+                {isMultiPanel && panelBreakdown.length > 0 && stage >= 3 && (
+                  <div className="mt-4 bg-white rounded-2xl overflow-hidden shadow-sm border border-[#e5e7eb]">
+                    <div className="px-4 py-3 border-b border-[#f3f4f6] flex items-center gap-2">
+                      <span className="text-[#4f46e5]">🔧</span>
+                      <p className="text-sm font-bold text-[#111827]">Damage Breakdown</p>
+                    </div>
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-xs">
+                        <thead>
+                          <tr className="border-b border-[#f3f4f6] bg-[#f8faff]">
+                            {['Panel / Area', 'Damage Type', 'Size (Est.)', 'Depth', 'AI Severity', 'Est. Repair Time'].map((h) => (
+                              <th key={h} className="px-3 py-2 text-left text-[10px] text-[#9ca3af] font-semibold whitespace-nowrap">{h}</th>
+                            ))}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {panelBreakdown.map((pb, i) => {
+                            const sevColor = pb.severity === 'Deep' ? { bg: '#fee2e2', text: '#dc2626' } : pb.severity === 'Medium' ? { bg: '#fef3c7', text: '#d97706' } : { bg: '#dcfce7', text: '#16a34a' };
+                            const sevLabel = pb.severity === 'Deep' ? 'High' : pb.severity === 'Medium' ? 'Medium' : 'Low';
+                            return (
+                              <tr key={i} className="border-b border-[#f9fafb] hover:bg-[#f8faff] transition-colors">
+                                <td className="px-3 py-3">
+                                  <div className="flex items-center gap-2">
+                                    <span className="w-6 h-6 rounded-lg bg-[#4f46e5] text-white text-[11px] font-bold flex items-center justify-center flex-shrink-0">{i + 1}</span>
+                                    <div>
+                                      <p className="font-semibold text-[#111827]">{pb.panelLabel}</p>
+                                      <p className="text-[10px] text-[#9ca3af]">{pb.dentCount} dent{pb.dentCount !== 1 ? 's' : ''} detected</p>
+                                    </div>
+                                  </div>
+                                </td>
+                                <td className="px-3 py-3 font-semibold text-[#111827]">{pb.damageType}</td>
+                                <td className="px-3 py-3">
+                                  <p className="font-medium text-[#111827]">Small</p>
+                                  <p className="text-[10px] text-[#9ca3af]">{pb.sizePretty}</p>
+                                </td>
+                                <td className="px-3 py-3">
+                                  <p className="font-medium text-[#111827]">{pb.depth}</p>
+                                  <p className="text-[10px] text-[#9ca3af]">Surface dent</p>
+                                </td>
+                                <td className="px-3 py-3">
+                                  <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold" style={{ backgroundColor: sevColor.bg, color: sevColor.text }}>{sevLabel}</span>
+                                </td>
+                                <td className="px-3 py-3 font-medium text-[#111827]">{pb.repairTime}</td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                    <div className="px-4 py-3 border-t border-[#f3f4f6] bg-[#f8faff]">
+                      <p className="text-[11px] text-[#6b7280]">✦ AI analysis subject to final review and approval by a certified technician.</p>
+                    </div>
+                  </div>
+                )}
 
                 {/* ── Damage Info Panel + Confirm ── */}
                 {analysisInfo && stage >= 3 && (
