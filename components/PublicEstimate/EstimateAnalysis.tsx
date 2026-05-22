@@ -4,6 +4,7 @@ import DarkFooter from '../DarkFooter';
 import { analyzeDents, verifyIsCarImage, identifyPanelsFromImages } from '../../services/geminiServiceAdapter';
 import { VehicleType, MaterialType, LightingType, PanelType } from '../../types';
 import { detectHailDamage } from '../../services/hailAnalysisService';
+import { calculateEstimateFromRules } from '../../services/pricingEngine';
 
 type Stage = 1 | 2 | 3 | 4;
 
@@ -91,6 +92,16 @@ const PANEL_OPTIONS = ['Bonnet', 'Guard (Front/Rear)', 'Door/s', 'Roof', 'Boot']
 const TYPE_OPTIONS = ['PDR Dent', 'Hail Damage'] as const;
 const DISPATCH_TOTAL_SECONDS = 180;
 const INVALID_IMAGE_FALLBACK_KEY = 'invalidImageValidationFallback';
+const mapDentSizeToCategory = (maxDentSizeMm: number): 'Small' | 'Medium' | 'Large' => {
+  if (maxDentSizeMm <= 30) return 'Small';
+  if (maxDentSizeMm <= 90) return 'Medium';
+  return 'Large';
+};
+const estimateFallbackDentSizeMm = (dentCount: number): number => {
+  if (dentCount >= 5) return 20;
+  if (dentCount >= 2) return 15;
+  return 10;
+};
 const normalizePanel = (value: string): string => {
   const lower = value.toLowerCase();
   if (lower.includes('bonnet') || lower.includes('hood')) return 'Bonnet';
@@ -311,11 +322,21 @@ const EstimateAnalysis: React.FC = () => {
         'pdr',
       );
 
+      const rawTotalDents = Math.max(0, Number(analysis.summary.total_dents || 0));
+      const panelDentSum = analysis.panels.reduce((sum, panel) => {
+        const dc = typeof panel.dent_count === 'number'
+          ? panel.dent_count
+          : (panel.dents?.length || 0);
+        return sum + Math.max(0, dc);
+      }, 0);
+      const effectiveDentCount = Math.max(1, panelDentSum || rawTotalDents);
+      analysis.summary.total_dents = effectiveDentCount;
+
       // Build per-panel breakdown from selectedPanels (always covers all user-selected panels)
       let panelBreakdownData: PanelBreakdown[] = [];
       if (selectedPanels.length > 1) {
         const usedPanelIndexes = new Set<number>();
-        let remainingDents = Math.max(0, analysis.summary.total_dents || 0);
+        let remainingDents = effectiveDentCount;
 
         panelBreakdownData = selectedPanels.map((selectedPanel, i) => {
           const selectedLabel = PANEL_LABEL_MAP[selectedPanel] ?? normalizePanel(String(selectedPanel));
@@ -359,8 +380,10 @@ const EstimateAnalysis: React.FC = () => {
         setPanelBreakdown(panelBreakdownData);
       }
 
-      const topPanel = [...analysis.panels].sort((a, b) => b.dent_count - a.dent_count)[0];
-      const dentCount = analysis.summary.total_dents;
+      const topPanel = [...analysis.panels].sort(
+        (a, b) => (Number(b.dent_count || 0) - Number(a.dent_count || 0))
+      )[0];
+      const dentCount = effectiveDentCount;
       const damageCategory = dentCount <= 2 ? 'Minor Dent' : dentCount <= 5 ? 'Moderate Dent' : 'Multiple Dents';
       const location = topPanel
         ? topPanel.panel_name.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())
@@ -379,8 +402,40 @@ const EstimateAnalysis: React.FC = () => {
         { min: 0, max: 0 }
       );
       const bestSum = breakdownCostSum.min > 0 ? breakdownCostSum : aiPanelCostSum;
-      const estMin = bestSum.min > 0 ? bestSum.min : (analysis.summary.estimated_total_cost_AUD?.min ?? 225);
-      const estMax = bestSum.max > 0 ? bestSum.max : (analysis.summary.estimated_total_cost_AUD?.max ?? 395);
+
+      let maxDentSizeMm = 0;
+      for (const panel of analysis.panels) {
+        for (const dent of panel.dents || []) {
+          const dentSizeMm = (dent.size_cm || 0) * 10;
+          if (dentSizeMm > maxDentSizeMm) maxDentSizeMm = dentSizeMm;
+        }
+      }
+      if (maxDentSizeMm === 0) {
+        maxDentSizeMm = estimateFallbackDentSizeMm(dentCount);
+      }
+      const sizeCategory = mapDentSizeToCategory(maxDentSizeMm);
+      const severityIndicatesLarge =
+        analysis.summary.overall_severity === 'Moderate' ||
+        analysis.summary.overall_severity === 'Severe';
+      const fewDentsIndicatesDominant = dentCount <= 3;
+      const sizeUnderestimated = maxDentSizeMm < 150;
+      const dominatesPanel = severityIndicatesLarge && fewDentsIndicatesDominant && sizeUnderestimated;
+      const deterministicPrice = calculateEstimateFromRules({
+        serviceType: isHail ? 'hail' : 'pdr',
+        dentCountTotal: dentCount,
+        hasPaintNeeded: hasPaintDamage,
+        largestDentSizeMm: maxDentSizeMm,
+        dominatesPanel,
+        sizeCategory,
+        overallSeverity: analysis.summary.overall_severity as 'Minor' | 'Moderate' | 'Severe',
+      }).priceRange;
+
+      const estMin = bestSum.min > 0
+        ? bestSum.min
+        : (analysis.summary.estimated_total_cost_AUD?.min ?? deterministicPrice.min);
+      const estMax = bestSum.max > 0
+        ? bestSum.max
+        : (analysis.summary.estimated_total_cost_AUD?.max ?? deterministicPrice.max);
 
       console.info('[estimate-ai-source]', {
         _source: (analysis as any)._source || 'unknown',
@@ -411,7 +466,7 @@ const EstimateAnalysis: React.FC = () => {
 
       sessionStorage.setItem('estimateData', JSON.stringify(payload));
       setBottomData({ damageCategory, location, repairTime });
-      const cnt = topPanel?.dent_count ?? analysis.summary.total_dents;
+      const cnt = Math.max(1, Number(topPanel?.dent_count ?? dentCount));
       const severityStr = (analysis.summary.overall_severity || 'Minor').toLowerCase();
       const lvl: AnalysisInfo['level'] =
         severityStr === 'severe' ? 'Deep' :

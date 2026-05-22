@@ -152,9 +152,13 @@ export async function runLiveScanAnalysis({
       : (panel.dents?.length || 0);
     return sum + Math.max(0, dentCount);
   }, 0);
-  fullAnalysis.summary.total_dents = totalDents;
+  const effectiveTotalDents = Math.max(1, totalDents);
+  if (totalDents === 0 && fullAnalysis.panels.length > 0) {
+    fullAnalysis.panels[0].dent_count = 1;
+  }
+  fullAnalysis.summary.total_dents = effectiveTotalDents;
   const isHailDetected = detectHailDamage(fullAnalysis);
-  const hailCategory = isHailDetected ? getHailCategory(totalDents) : undefined;
+  const hailCategory = isHailDetected ? getHailCategory(effectiveTotalDents) : undefined;
   const hasPaintNeeded = fullAnalysis.flags.pdr_incompatible || fullAnalysis.summary.total_scratches > 0;
 
   let pricingResult: { priceRange: { min: number; max: number }; manualReviewRequired: boolean };
@@ -164,7 +168,11 @@ export async function runLiveScanAnalysis({
     let totalMaxPrice = 0;
 
     for (const panel of fullAnalysis.panels) {
-      if (panel.dents && panel.dents.length > 0) {
+      const panelDentCount = typeof panel.dent_count === 'number'
+        ? panel.dent_count
+        : (panel.dents?.length || 0);
+
+      if (panelDentCount > 0) {
         let maxDentSize = 0;
         for (const dent of panel.dents) {
           const dentSizeMm = (dent.size_cm || 0) * 10;
@@ -172,21 +180,21 @@ export async function runLiveScanAnalysis({
         }
 
         if (maxDentSize === 0) {
-          maxDentSize = estimateFallbackDentSizeMm(panel.dents.length);
+          maxDentSize = estimateFallbackDentSizeMm(panelDentCount);
         }
 
         const panelSizeCategory = mapDentSizeToCategory(maxDentSize);
         const severityIndicatesLarge =
           fullAnalysis.summary.overall_severity === 'Moderate' ||
           fullAnalysis.summary.overall_severity === 'Severe';
-        const fewDentsIndicatesDominant = panel.dents.length <= 3;
+        const fewDentsIndicatesDominant = panelDentCount <= 3;
         const sizeUnderestimated = maxDentSize < 150;
         const dominatesPanel =
           severityIndicatesLarge && fewDentsIndicatesDominant && sizeUnderestimated;
 
         const panelPricingResult = calculateEstimateFromRules({
           serviceType: 'pdr',
-          dentCountTotal: panel.dents.length,
+          dentCountTotal: panelDentCount,
           hasPaintNeeded: false,
           largestDentSizeMm: maxDentSize,
           dominatesPanel,
@@ -221,21 +229,21 @@ export async function runLiveScanAnalysis({
     }
 
     if (maxDentSize === 0) {
-      maxDentSize = estimateFallbackDentSizeMm(totalDents);
+      maxDentSize = estimateFallbackDentSizeMm(effectiveTotalDents);
     }
 
     const sizeCategory = mapDentSizeToCategory(maxDentSize);
     const severityIndicatesLarge =
       fullAnalysis.summary.overall_severity === 'Moderate' ||
       fullAnalysis.summary.overall_severity === 'Severe';
-    const fewDentsIndicatesDominant = totalDents <= 3;
+    const fewDentsIndicatesDominant = effectiveTotalDents <= 3;
     const sizeUnderestimated = maxDentSize < 150;
     const dominatesPanel =
       severityIndicatesLarge && fewDentsIndicatesDominant && sizeUnderestimated;
 
     const singleResult = calculateEstimateFromRules({
       serviceType: isHailDetected ? 'hail' : 'pdr',
-      dentCountTotal: totalDents,
+      dentCountTotal: effectiveTotalDents,
       hasPaintNeeded,
       largestDentSizeMm: maxDentSize,
       dominatesPanel,
@@ -269,7 +277,7 @@ export async function runLiveScanAnalysis({
     confidence: fullAnalysis.summary.confidence_overall,
     needs_paint_repair: hasPaintNeeded,
     damage_type: isHailDetected ? 'hail' : 'pdr',
-    dent_count_estimate: totalDents,
+    dent_count_estimate: effectiveTotalDents,
     hail_category: hailCategory,
     estimated_cost: pricingResult.manualReviewRequired ? undefined : pricingResult.priceRange,
     price_range: pricingResult.priceRange,
