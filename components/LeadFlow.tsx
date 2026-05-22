@@ -20,6 +20,10 @@ const LeadFlow: React.FC = () => {
   const [result, setResult] = useState<LeadResult | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  useEffect(() => {
+    window.scrollTo({ top: 0, left: 0, behavior: 'auto' });
+  }, [stage]);
+
   const runLeadAnalysis = async (incomingFiles: File[]) => {
     if (incomingFiles.length === 0) {
       setError('Please upload at least one image.');

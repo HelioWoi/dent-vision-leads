@@ -101,6 +101,10 @@ const EstimateAnalysis: React.FC = () => {
   const isContactValid = customerName.trim().length >= 2 && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(customerEmail.trim());
 
   useEffect(() => {
+    window.scrollTo({ top: 0, left: 0, behavior: 'auto' });
+  }, [stage, invalidImageFallback]);
+
+  useEffect(() => {
     const files = (window as any).__leadUploadFiles as File[] | undefined;
     if (files?.length) {
       const urls = files.slice(0, 4).map((f) => URL.createObjectURL(f));
@@ -226,27 +230,6 @@ const EstimateAnalysis: React.FC = () => {
     }
   }, [stage, dispatchSecondsLeft]);
 
-  const buildDemoPayload = () => {
-    const zip = (window as any).__leadZipCode || '';
-    return {
-      analysis: null,
-      damageType: 'pdr',
-      estimateMin: 250,
-      estimateMax: 375,
-      confidence: 88,
-      dents: 1,
-      scratches: 0,
-      damageCategory: 'Minor Dent',
-      location: 'Front Right Door',
-      repairTime: '1–2 hours',
-      zip,
-      isDemo: true,
-    };
-  };
-
-  const isAuthError = (msg: string) =>
-    /auth|anonymous|authentication|401|unauthorized|jwt|token/i.test(msg);
-
   const runAnalysis = async () => {
     setStage(2);
     try {
@@ -327,16 +310,8 @@ const EstimateAnalysis: React.FC = () => {
         return;
       }
       const msg = err instanceof Error ? err.message : String(err);
-      if (isAuthError(msg)) {
-        const payload = buildDemoPayload();
-        sessionStorage.setItem('estimateData', JSON.stringify(payload));
-        setBottomData({ damageCategory: payload.damageCategory, location: payload.location, repairTime: payload.repairTime });
-        setAnalysisInfo({ panelName: 'Door/s', damageType: 'PDR Dent', dentCount: payload.dents, level: 'Shallow' });
-        setStage(3);
-        animateShops(payload.estimateMin, payload.estimateMax);
-      } else {
-        setError(msg || 'Analysis failed. Please try again.');
-      }
+      console.error('[estimate-analysis] runAnalysis error:', msg, err);
+      setError(msg || 'Analysis failed. Please try again.');
     }
   };
 

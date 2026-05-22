@@ -155,6 +155,57 @@ type AnalyzeDentsInput = {
   vehicleDetails?: { vehicleType?: string };
 };
 
+// ─── Pricing Table — canonical source of truth (AUD, 22% margin) ────────────
+
+const PRICING_TABLE = [
+  { category: 1, range: '0-30mm',    minMm:   0, maxMm:  30, priceMin: 118, priceMax: 144 },
+  { category: 2, range: '31-60mm',   minMm:  31, maxMm:  60, priceMin: 180, priceMax: 220 },
+  { category: 3, range: '61-90mm',   minMm:  61, maxMm:  90, priceMin: 258, priceMax: 315 },
+  { category: 4, range: '91-160mm',  minMm:  91, maxMm: 160, priceMin: 293, priceMax: 357 },
+  { category: 5, range: '161-260mm', minMm: 161, maxMm: 260, priceMin: 392, priceMax: 478 },
+  { category: 6, range: '261-400mm', minMm: 261, maxMm: 400, priceMin: 490, priceMax: 598 },
+  { category: 7, range: '400-600mm', minMm: 401, maxMm: 600, priceMin: 680, priceMax: 830 },
+] as const;
+
+const pricingByCategory = (cat: number) =>
+  PRICING_TABLE[Math.min(6, Math.max(0, Math.round(cat || 1) - 1))];
+
+const pricingBySizeMm = (sizeMm: number) => {
+  for (const r of PRICING_TABLE) {
+    if (sizeMm >= r.minMm && sizeMm <= r.maxMm) return r;
+  }
+  return sizeMm > 0 ? PRICING_TABLE[6] : PRICING_TABLE[0];
+};
+
+const resolvePrice = (
+  aiMin: number | undefined,
+  aiMax: number | undefined,
+  category: number | undefined,
+  largestDentMm: number,
+): { min: number; max: number } => {
+  // 1. Trust AI-provided prices when non-zero
+  if (aiMin && aiMin > 0) {
+    const resolvedMax = aiMax && aiMax > aiMin ? Math.round(aiMax) : Math.round(aiMin * 1.22);
+    console.info('[pricing] Using AI-provided prices', { aiMin, resolvedMax });
+    return { min: Math.round(aiMin), max: resolvedMax };
+  }
+  // 2. Map AI dent_category (1-7) to pricing table
+  if (category && category >= 1 && category <= 7) {
+    const entry = pricingByCategory(category);
+    console.info('[pricing] Using category lookup', { category, entry });
+    return { min: entry.priceMin, max: entry.priceMax };
+  }
+  // 3. Map dent size in mm to pricing table
+  if (largestDentMm > 0) {
+    const entry = pricingBySizeMm(largestDentMm);
+    console.info('[pricing] Using size lookup', { largestDentMm, entry });
+    return { min: entry.priceMin, max: entry.priceMax };
+  }
+  // 4. Last resort: Category 1 minimum — NEVER $250 hardcoded default
+  console.warn('[pricing] No pricing signals from AI — using Category 1 minimum $118/$144');
+  return { min: 118, max: 144 };
+};
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 const DEFAULT_POLYGON: [number, number][] = [
@@ -174,9 +225,10 @@ const severityMap: Record<string, 'Minor' | 'Moderate' | 'Severe'> = {
 };
 
 const buildResponseFromOpenAI = (vehicleType: string, ai: OpenAIAnalysis) => {
-  const min = Math.max(120, Math.round(ai.estimated_min || ai.suggested_base_price! * 0.85 || 250));
-  const max = Math.max(min + 60, Math.round(ai.estimated_max || ai.suggested_base_price! * 1.15 || min + 120));
   const dentCount = Math.max(0, Math.round(ai.dent_count || 0));
+  const largestDentMm = dentCount > 0 ? (ai.dent_category || 1) * 30 : 0;
+  const { min, max } = resolvePrice(ai.estimated_min, ai.estimated_max, ai.dent_category, largestDentMm);
+  console.info('[analyze-dents-secure] OpenAI resolved price', { min, max, dent_category: ai.dent_category, estimated_min: ai.estimated_min, estimated_max: ai.estimated_max });
   const scratchCount = Math.max(0, Math.round(ai.scratch_count || 0));
   const confidence = Math.min(0.99, Math.max(0.45, Number(ai.confidence || 0.82)));
   const severity = severityMap[String(ai.severity || 'minor').toLowerCase()] || 'Minor';
@@ -258,9 +310,10 @@ const buildResponseFromOpenAI = (vehicleType: string, ai: OpenAIAnalysis) => {
 };
 
 const buildResponseFromGemini = (vehicleType: string, model: GeminiDentModel, triage?: GeminiTriage) => {
-  const min = Math.max(120, Math.round(model.estimated_min || 250));
-  const max = Math.max(min + 60, Math.round(model.estimated_max || min + 120));
   const dentCount = Math.max(0, Math.round(model.dent_count || 0));
+  const largestDentMm = (model.dents || []).reduce((m, d) => Math.max(m, (d.size_cm || 0) * 10), 0);
+  const { min, max } = resolvePrice(model.estimated_min, model.estimated_max, undefined, largestDentMm);
+  console.info('[analyze-dents-secure] Gemini resolved price', { min, max, estimated_min: model.estimated_min, estimated_max: model.estimated_max, largestDentMm });
   const scratchCount = Math.max(0, Math.round(model.scratch_count || 0));
   const confidence = Math.min(0.99, Math.max(0.45, Number(model.confidence || 0.82)));
 
@@ -312,18 +365,37 @@ const buildResponseFromGemini = (vehicleType: string, model: GeminiDentModel, tr
   };
 };
 
-const hardFallback = (vehicleType: string, reason: string) => ({
-  ...buildResponseFromGemini(vehicleType, {
-    dent_count: 1,
-    scratch_count: 0,
-    severity: 'Minor',
-    estimated_min: 180,
-    estimated_max: 320,
-    confidence: 0.75,
+const hardFallback = (vehicleType: string, reason: string) => {
+  console.warn('[analyze-dents-secure] hardFallback triggered:', reason);
+  const entry = PRICING_TABLE[0];
+  return {
+    panels: [{
+      panel_name: 'unknown',
+      dent_count: 0,
+      scratch_count: 0,
+      modifiers: { aluminium: false, access_difficulty: 'low', hail_cluster: false },
+      estimated_panel_cost_AUD: { min: entry.priceMin, max: entry.priceMax },
+      dents: [],
+      scratches: [],
+    }],
+    summary: {
+      vehicle_type: vehicleType,
+      total_dents: 0,
+      total_scratches: 0,
+      overall_severity: 'Unknown' as const,
+      base_callout_applied: false,
+      estimated_total_cost_AUD: { min: entry.priceMin, max: entry.priceMax },
+      confidence_overall: 0.4,
+    },
+    next_best_captures: [{ tip: 'Please upload a clearer photo of the damaged panel.', distance_m: '0.8m', reason }],
+    flags: { review_required: true, possible_reflection: false, pdr_incompatible: false },
     notes: reason,
-  }),
-  _source: 'fallback',
-});
+    _source: 'fallback',
+    _fallback_reason: reason,
+    analysis_source: 'fallback',
+    error_message: 'AI analysis incomplete — please upload a clearer image for an accurate estimate.',
+  };
+};
 
 // ─── Handler ──────────────────────────────────────────────────────────────────
 

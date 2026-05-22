@@ -14,6 +14,12 @@ const deriveRoute = () => {
   return '#/'
 }
 
+const scrollToTop = () => {
+  window.scrollTo({ top: 0, left: 0, behavior: 'auto' })
+  document.documentElement.scrollTop = 0
+  document.body.scrollTop = 0
+}
+
 const App: React.FC = () => {
   const [route, setRoute] = useState(deriveRoute())
   const routePath = route.split('?')[0]
@@ -30,8 +36,10 @@ const App: React.FC = () => {
   }, [])
 
   useEffect(() => {
-    window.scrollTo({ top: 0, left: 0, behavior: 'auto' })
-  }, [routePath])
+    scrollToTop()
+    const raf = window.requestAnimationFrame(scrollToTop)
+    return () => window.cancelAnimationFrame(raf)
+  }, [route])
 
   if (routePath.startsWith('#/admin')) return <AdminPlatform route={route} />
   if (routePath.startsWith('#/partner')) return <PartnerPlatform route={route} />
