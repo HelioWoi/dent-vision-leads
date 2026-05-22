@@ -3,6 +3,18 @@ import EstimateHeader from './EstimateHeader';
 import DarkFooter from '../DarkFooter';
 import { submitBookingRequest } from '../../services/bookingService';
 
+interface PanelBreakdownRow {
+  panelLabel: string;
+  dentCount: number;
+  damageType: string;
+  sizePretty: string;
+  depth: string;
+  severity: string;
+  repairTime: string;
+  minCost: number;
+  maxCost: number;
+}
+
 interface StoredEstimateData {
   estimateMin?: number;
   estimateMax?: number;
@@ -14,6 +26,7 @@ interface StoredEstimateData {
     name?: string;
     email?: string;
   };
+  panelBreakdownData?: PanelBreakdownRow[];
 }
 
 interface StoredShopTarget {
@@ -104,13 +117,21 @@ const BookingForm: React.FC = () => {
   const isPhoneValid = customerPhone.trim().length >= 8;
   const canSubmit = customerName.trim().length >= 2 && isEmailValid && isPhoneValid && rego.trim().length >= 2 && postalCode.trim().length >= 3 && preferredDate && agreeLiability;
 
+  const panelBreakdown = estimate?.panelBreakdownData ?? [];
+  const hasPanelBreakdown = panelBreakdown.length > 1;
+
+  const finalMin = hasPanelBreakdown
+    ? panelBreakdown.reduce((s, p) => s + p.minCost, 0)
+    : Number(estimate?.estimateMin || 0);
+  const finalMax = hasPanelBreakdown
+    ? panelBreakdown.reduce((s, p) => s + p.maxCost, 0)
+    : Number(estimate?.estimateMax || 0);
+
   const estimateLabel = useMemo(() => {
-    const min = Number(estimate?.estimateMin || 0);
-    const max = Number(estimate?.estimateMax || 0);
-    if (!min && !max) return 'To be confirmed after review';
-    if (min && max && min !== max) return `$${min} - $${max}`;
-    return `$${min || max}`;
-  }, [estimate]);
+    if (!finalMin && !finalMax) return 'To be confirmed after review';
+    if (finalMin && finalMax && finalMin !== finalMax) return `$${finalMin} – $${finalMax}`;
+    return `$${finalMin || finalMax}`;
+  }, [finalMin, finalMax]);
 
   const shopInitials = useMemo(() => {
     const source = String(targetShop?.name || 'Bodyshop Partner').trim();
@@ -256,12 +277,50 @@ const BookingForm: React.FC = () => {
                 ) : null}
               </div>
 
-              <div className="mt-4 grid gap-3 sm:grid-cols-2 text-sm">
-                <div className="rounded-xl border border-[#e5eaf8] bg-[#f8faff] px-3 py-2"><p className="text-[#64748b] text-xs">Damage type</p><p className="font-semibold text-[#111827]">{estimate?.damageCategory || 'Minor Dent'}</p></div>
-                <div className="rounded-xl border border-[#e5eaf8] bg-[#f8faff] px-3 py-2"><p className="text-[#64748b] text-xs">Panel location</p><p className="font-semibold text-[#111827]">{estimate?.location || 'Door panel'}</p></div>
-                <div className="rounded-xl border border-[#e5eaf8] bg-[#f8faff] px-3 py-2"><p className="text-[#64748b] text-xs">Estimated dents</p><p className="font-semibold text-[#111827]">{estimate?.dents || 1}</p></div>
-                <div className="rounded-xl border border-[#e5eaf8] bg-[#f8faff] px-3 py-2"><p className="text-[#64748b] text-xs">Estimated value</p><p className="font-semibold text-[#111827]">{estimateLabel}</p></div>
-              </div>
+              {hasPanelBreakdown ? (
+                <div className="mt-4 overflow-hidden rounded-xl border border-[#dbe4fa]">
+                  <div className="px-3 py-2.5 bg-[#f0f4ff] border-b border-[#dbe4fa]">
+                    <p className="text-xs font-bold text-[#111827]">Panel Breakdown</p>
+                  </div>
+                  <table className="w-full text-xs">
+                    <thead>
+                      <tr className="border-b border-[#eef1f8] bg-[#f8faff]">
+                        {['Panel', 'Type', 'Depth', 'Est. Cost', 'Repair Time'].map((h) => (
+                          <th key={h} className="px-3 py-2 text-left text-[10px] font-semibold text-[#9ca3af] whitespace-nowrap">{h}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {panelBreakdown.map((pb, i) => (
+                        <tr key={i} className="border-b border-[#f3f4f6] last:border-0">
+                          <td className="px-3 py-2.5">
+                            <div className="flex items-center gap-1.5">
+                              <span className="w-5 h-5 rounded-md bg-[#4f46e5] text-white text-[10px] font-bold flex items-center justify-center flex-shrink-0">{i + 1}</span>
+                              <span className="font-semibold text-[#111827]">{pb.panelLabel}</span>
+                            </div>
+                            <p className="text-[10px] text-[#9ca3af] pl-6.5 mt-0.5">{pb.dentCount} dent{pb.dentCount !== 1 ? 's' : ''}</p>
+                          </td>
+                          <td className="px-3 py-2.5 text-[#374151]">{pb.damageType}</td>
+                          <td className="px-3 py-2.5 text-[#374151]">{pb.depth}</td>
+                          <td className="px-3 py-2.5 font-semibold text-[#111827]">${pb.minCost}–${pb.maxCost}</td>
+                          <td className="px-3 py-2.5 text-[#374151]">{pb.repairTime}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                  <div className="px-3 py-2.5 bg-[#f8faff] border-t border-[#dbe4fa] flex items-center justify-between">
+                    <p className="text-[11px] text-[#6b7280]">Total ({panelBreakdown.length} panels)</p>
+                    <p className="text-sm font-extrabold text-[#111827]">${finalMin} – ${finalMax}</p>
+                  </div>
+                </div>
+              ) : (
+                <div className="mt-4 grid gap-3 sm:grid-cols-2 text-sm">
+                  <div className="rounded-xl border border-[#e5eaf8] bg-[#f8faff] px-3 py-2"><p className="text-[#64748b] text-xs">Damage type</p><p className="font-semibold text-[#111827]">{estimate?.damageCategory || 'Minor Dent'}</p></div>
+                  <div className="rounded-xl border border-[#e5eaf8] bg-[#f8faff] px-3 py-2"><p className="text-[#64748b] text-xs">Panel location</p><p className="font-semibold text-[#111827]">{estimate?.location || 'Door panel'}</p></div>
+                  <div className="rounded-xl border border-[#e5eaf8] bg-[#f8faff] px-3 py-2"><p className="text-[#64748b] text-xs">Estimated dents</p><p className="font-semibold text-[#111827]">{estimate?.dents || 1}</p></div>
+                  <div className="rounded-xl border border-[#e5eaf8] bg-[#f8faff] px-3 py-2"><p className="text-[#64748b] text-xs">Estimated value</p><p className="font-semibold text-[#111827]">{estimateLabel}</p></div>
+                </div>
+              )}
             </div>
 
             <div className="mt-4 space-y-2">
