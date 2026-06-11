@@ -4,7 +4,18 @@ import DarkFooter from '../DarkFooter';
 import { analyzeDents, verifyIsCarImage, identifyPanelsFromImages } from '../../services/geminiServiceAdapter';
 import { VehicleType, MaterialType, LightingType, PanelType } from '../../types';
 import { detectHailDamage } from '../../services/hailAnalysisService';
-import { calculateEstimateFromRules } from '../../services/pricingEngine';
+import { priceForCategory } from '../../supabase/functions/_shared/pricing.ts';
+import {
+  DamageRegion,
+  allRegionsToPolygons,
+  pointerToPct,
+  regionFromDrag,
+} from '../../utils/damageRegions';
+import {
+  PanelPhotoGroup,
+  selectBestPhotosPerPanel,
+} from '../../utils/panelPhotoUpload';
+import { validateVehiclePhotos } from '../../utils/validateVehiclePhotos';
 
 type Stage = 1 | 2 | 3 | 4;
 
@@ -92,16 +103,6 @@ const PANEL_OPTIONS = ['Bonnet', 'Guard (Front/Rear)', 'Door/s', 'Roof', 'Boot']
 const TYPE_OPTIONS = ['PDR Dent', 'Hail Damage'] as const;
 const DISPATCH_TOTAL_SECONDS = 180;
 const INVALID_IMAGE_FALLBACK_KEY = 'invalidImageValidationFallback';
-const mapDentSizeToCategory = (maxDentSizeMm: number): 'Small' | 'Medium' | 'Large' => {
-  if (maxDentSizeMm <= 30) return 'Small';
-  if (maxDentSizeMm <= 90) return 'Medium';
-  return 'Large';
-};
-const estimateFallbackDentSizeMm = (dentCount: number): number => {
-  if (dentCount >= 5) return 20;
-  if (dentCount >= 2) return 15;
-  return 10;
-};
 const normalizePanel = (value: string): string => {
   const lower = value.toLowerCase();
   if (lower.includes('bonnet') || lower.includes('hood')) return 'Bonnet';
@@ -123,11 +124,17 @@ const EstimateAnalysis: React.FC = () => {
   const [zip, setZip] = useState('');
   const [statusPulse, setStatusPulse] = useState(0);
   const [photoUrls, setPhotoUrls] = useState<string[]>([]);
+  const [photosLoading, setPhotosLoading] = useState(true);
   const [analysisInfo, setAnalysisInfo] = useState<AnalysisInfo | null>(null);
   const [panelBreakdown, setPanelBreakdown] = useState<PanelBreakdown[]>([]);
   const selectedPanelsOnLoad: PanelType[] = ((window as any).__leadSelectedPanels as PanelType[] | undefined) || [];
   const isMultiPanel = selectedPanelsOnLoad.length > 1;
   const [markers, setMarkers] = useState<{ id: number; top: number; left: number }[][]>([]);
+  const [damageRegions, setDamageRegions] = useState<DamageRegion[][]>([]);
+  const [regionDrag, setRegionDrag] = useState<{
+    photoIdx: number; x1: number; y1: number; x2: number; y2: number;
+  } | null>(null);
+  const [awaitingUserMarking, setAwaitingUserMarking] = useState(true);
   const [dragging, setDragging] = useState<{ photoIdx: number; markerIdx: number } | null>(null);
   const [dispatchSecondsLeft, setDispatchSecondsLeft] = useState(DISPATCH_TOTAL_SECONDS);
   const [customerName, setCustomerName] = useState('');
@@ -145,13 +152,55 @@ const EstimateAnalysis: React.FC = () => {
   }, [stage, invalidImageFallback]);
 
   useEffect(() => {
-    const files = (window as any).__leadUploadFiles as File[] | undefined;
-    if (files?.length) {
-      const urls = files.slice(0, 4).map((f) => URL.createObjectURL(f));
-      setPhotoUrls(urls);
-      setMarkers(urls.map(() => [{ id: nextId.current++, top: 42, left: 55 }]));
-      return () => { urls.forEach((u) => URL.revokeObjectURL(u)); };
-    }
+    let cancelled = false;
+    let objectUrls: string[] = [];
+
+    const loadPhotos = async () => {
+      setPhotosLoading(true);
+      try {
+        const byPanel = (window as any).__leadUploadByPanel as PanelPhotoGroup[] | undefined;
+        const legacyFiles = (window as any).__leadUploadFiles as File[] | undefined;
+
+        let files: File[] = [];
+        if (byPanel?.length) {
+          const selected = await selectBestPhotosPerPanel(byPanel);
+          if (cancelled) return;
+          (window as any).__leadUploadFiles = selected.files;
+          (window as any).__leadSelectedPanels = selected.panels;
+          files = selected.files;
+        } else if (legacyFiles?.length) {
+          files = legacyFiles.slice(0, 4);
+        }
+
+        if (!files.length) {
+          if (!cancelled) setPhotosLoading(false);
+          return;
+        }
+
+        const { accepted, rejected } = await validateVehiclePhotos(files);
+        if (cancelled) return;
+        if (rejected) {
+          showInvalidImageFallback('upload');
+          return;
+        }
+        files = accepted;
+        (window as any).__leadUploadFiles = files;
+
+        objectUrls = files.map((f) => URL.createObjectURL(f));
+        if (cancelled) return;
+        setPhotoUrls(objectUrls);
+        setDamageRegions(objectUrls.map(() => []));
+        setMarkers(objectUrls.map(() => []));
+      } finally {
+        if (!cancelled) setPhotosLoading(false);
+      }
+    };
+
+    loadPhotos();
+    return () => {
+      cancelled = true;
+      objectUrls.forEach((u) => URL.revokeObjectURL(u));
+    };
   }, []);
 
   const showInvalidImageFallback = (source: 'upload' | 'live-scan') => {
@@ -169,35 +218,23 @@ const EstimateAnalysis: React.FC = () => {
 
   useEffect(() => {
     if (!analysisInfo || !photoUrls.length) return;
+    // After analysis, show user-marked regions (or centers) on results screen.
+    const regionMarkers = damageRegions.map((regions) =>
+      regions.map((r) => ({ id: r.id, top: r.cy, left: r.cx }))
+    );
+    if (regionMarkers.some((g) => g.length > 0)) {
+      setMarkers(regionMarkers);
+      return;
+    }
     const count = Math.min(Math.max(0, analysisInfo.dentCount), 5);
     const spread = [
       { top: 38, left: 62 }, { top: 55, left: 38 }, { top: 28, left: 55 },
       { top: 63, left: 72 }, { top: 45, left: 25 },
     ];
-    let estimateSource: string | undefined;
-    try {
-      const estimateRaw = sessionStorage.getItem('estimateData');
-      if (estimateRaw) {
-        estimateSource = (JSON.parse(estimateRaw) as { source?: string }).source;
-      }
-    } catch {
-      estimateSource = undefined;
-    }
-
-    if (estimateSource === 'live-scan') {
-      const nextMarkers = photoUrls.map(() => [] as { id: number; top: number; left: number }[]);
-      for (let i = 0; i < count; i += 1) {
-        const photoIdx = i % photoUrls.length;
-        nextMarkers[photoIdx].push({ id: nextId.current++, ...spread[i % spread.length] });
-      }
-      setMarkers(nextMarkers);
-      return;
-    }
-
     setMarkers(photoUrls.map(() =>
       Array.from({ length: count }, (_, i) => ({ id: nextId.current++, ...spread[i] }))
     ));
-  }, [analysisInfo]);
+  }, [analysisInfo, damageRegions, photoUrls.length]);
 
   useEffect(() => {
     if (started.current) return;
@@ -249,10 +286,12 @@ const EstimateAnalysis: React.FC = () => {
           dentCount: Math.max(1, Number(dispatchMode.dentCount || 1)),
           level: dispatchMode.level || 'Shallow',
         });
+        setAwaitingUserMarking(false);
         setStage(3);
       } catch {
         setZip((window as any).__leadZipCode || '');
-        setTimeout(runAnalysis, 900);
+        setAwaitingUserMarking(false);
+        setTimeout(() => runAnalysis(), 900);
       } finally {
         sessionStorage.removeItem('liveScanDispatchMode');
       }
@@ -260,7 +299,7 @@ const EstimateAnalysis: React.FC = () => {
     }
 
     setZip((window as any).__leadZipCode || '');
-    setTimeout(runAnalysis, 900);
+    // Upload flow: user marks damage first, then analysis runs on confirm.
   }, []);
 
   useEffect(() => {
@@ -292,7 +331,7 @@ const EstimateAnalysis: React.FC = () => {
     }
   }, [stage, dispatchSecondsLeft]);
 
-  const runAnalysis = async () => {
+  const runAnalysis = async (userPolygons?: [number, number][][]) => {
     setStage(2);
     try {
       const files = (window as any).__leadUploadFiles as File[] | undefined;
@@ -313,6 +352,8 @@ const EstimateAnalysis: React.FC = () => {
         : panelResult.panels.length ? panelResult.panels
         : [PanelType.Doors];
 
+      const polygons = userPolygons ?? allRegionsToPolygons(damageRegions);
+
       const analysis = await analyzeDents(
         verified,
         VehicleType.Sedan,
@@ -320,6 +361,8 @@ const EstimateAnalysis: React.FC = () => {
         LightingType.Daylight,
         panels,
         'pdr',
+        undefined,
+        polygons.length > 0 ? polygons : undefined,
       );
 
       const rawTotalDents = Math.max(0, Number(analysis.summary.total_dents || 0));
@@ -364,6 +407,14 @@ const EstimateAnalysis: React.FC = () => {
             : remainingDents > 0 ? 1 : 0;
           remainingDents = Math.max(0, remainingDents - dc);
 
+          // Panels the AI didn't match get the canonical category price for
+          // their dent share — never a hardcoded Category 1 default.
+          const triageCategory = Number((analysis as any).ai_triage?.dent_category || 1);
+          const aiPanelCost = p?.estimated_panel_cost_AUD;
+          const panelCost = aiPanelCost && (aiPanelCost.min || 0) > 0
+            ? { min: aiPanelCost.min || 0, max: aiPanelCost.max || 0 }
+            : dc > 0 ? priceForCategory(triageCategory, dc) : { min: 0, max: 0 };
+
           return {
             panelLabel: selectedLabel,
             dentCount: dc,
@@ -372,8 +423,8 @@ const EstimateAnalysis: React.FC = () => {
             depth,
             severity: depth,
             repairTime: dc <= 1 ? '30–60 min' : dc <= 3 ? '1–2 hours' : '2–3 hours',
-            minCost: p?.estimated_panel_cost_AUD?.min ?? 118,
-            maxCost: p?.estimated_panel_cost_AUD?.max ?? 144,
+            minCost: panelCost.min,
+            maxCost: panelCost.max,
           };
         });
 
@@ -384,64 +435,54 @@ const EstimateAnalysis: React.FC = () => {
         (a, b) => (Number(b.dent_count || 0) - Number(a.dent_count || 0))
       )[0];
       const dentCount = effectiveDentCount;
-      const damageCategory = dentCount <= 2 ? 'Minor Dent' : dentCount <= 5 ? 'Moderate Dent' : 'Multiple Dents';
+      const resolvedCat = Number((analysis as any).ai_triage?.dent_category || 0);
+      const dentType = String((analysis as any).ai_triage?.dent_type || '').toLowerCase();
+      const damageCategory =
+        resolvedCat >= 6 || /bodyline|crease|collapsed/.test(dentType) ? 'Major Crease / Bodyline Damage'
+        : resolvedCat >= 4 ? 'Moderate to Major Dent'
+        : dentCount <= 2 ? 'Minor Dent'
+        : dentCount <= 5 ? 'Moderate Dent'
+        : 'Multiple Dents';
       const location = topPanel
         ? topPanel.panel_name.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())
         : 'Vehicle Panel';
-      const repairTime = dentCount <= 2 ? '1–2 hours' : dentCount <= 5 ? '1–3 hours' : '3–5 hours';
+      const repairTime =
+        resolvedCat >= 6 ? '3–5 hours'
+        : resolvedCat >= 4 ? '2–4 hours'
+        : dentCount <= 2 ? '1–2 hours'
+        : dentCount <= 5 ? '1–3 hours'
+        : '3–5 hours';
       const isHail = detectHailDamage(analysis);
       const hasPaintDamage = !!(analysis.flags?.pdr_incompatible) || analysis.summary.total_scratches > 0;
 
-      // Cost sum: prefer breakdown (covers all selected panels) over AI panels alone
+      // SINGLE SOURCE OF TRUTH: prices come from the edge function, which uses
+      // the canonical category table (supabase/functions/_shared/pricing.ts).
+      // The frontend never re-prices. Multi-panel flow sums the per-panel
+      // breakdown (built from the same table above).
+      const aiTotal = analysis.summary.estimated_total_cost_AUD || { min: 0, max: 0 };
       const breakdownCostSum = panelBreakdownData.reduce(
         (acc, p) => ({ min: acc.min + p.minCost, max: acc.max + p.maxCost }),
         { min: 0, max: 0 }
       );
-      const aiPanelCostSum = analysis.panels.reduce(
-        (acc, p) => ({ min: acc.min + (p.estimated_panel_cost_AUD?.min || 0), max: acc.max + (p.estimated_panel_cost_AUD?.max || 0) }),
-        { min: 0, max: 0 }
-      );
-      const bestSum = breakdownCostSum.min > 0 ? breakdownCostSum : aiPanelCostSum;
+      const estMin = breakdownCostSum.min > 0 ? breakdownCostSum.min : (aiTotal.min || 0);
+      const estMax = breakdownCostSum.max > 0 ? breakdownCostSum.max : (aiTotal.max || 0);
 
-      let maxDentSizeMm = 0;
-      for (const panel of analysis.panels) {
-        for (const dent of panel.dents || []) {
-          const dentSizeMm = (dent.size_cm || 0) * 10;
-          if (dentSizeMm > maxDentSizeMm) maxDentSizeMm = dentSizeMm;
-        }
-      }
-      // Keep maxDentSizeMm=0 when no real AI size data — engine will use sizeCategory fallback (45mm→$150)
-      const sizeCategory = mapDentSizeToCategory(maxDentSizeMm);
-      const severityIndicatesLarge =
-        analysis.summary.overall_severity === 'Moderate' ||
-        analysis.summary.overall_severity === 'Severe';
-      const fewDentsIndicatesDominant = dentCount <= 3;
-      const sizeUnderestimated = maxDentSizeMm < 150;
-      const dominatesPanel = severityIndicatesLarge && fewDentsIndicatesDominant && sizeUnderestimated;
-      const deterministicPrice = calculateEstimateFromRules({
-        serviceType: isHail ? 'hail' : 'pdr',
-        dentCountTotal: dentCount,
-        hasPaintNeeded: hasPaintDamage,
-        largestDentSizeMm: maxDentSizeMm,
-        dominatesPanel,
-        sizeCategory,
-        overallSeverity: analysis.summary.overall_severity as 'Minor' | 'Moderate' | 'Severe',
-      }).priceRange;
-
-      // Always use deterministic pricing engine to keep local/prod consistent.
-      // AI's raw estimated_panel_cost_AUD varies per call and is NOT used as price source.
-      const estMin = breakdownCostSum.min > 0 ? breakdownCostSum.min : deterministicPrice.min;
-      const estMax = breakdownCostSum.max > 0 ? breakdownCostSum.max : deterministicPrice.max;
+      // HONESTY RULE: failed/unpriced analysis routes to inspection — never a fake price.
+      const analysisFailed = (analysis as any)._source === 'fallback' || estMin <= 0 || estMax <= 0;
+      const needsInspection = analysisFailed || !!analysis.flags?.review_required;
 
       console.info('[estimate-ai-source]', {
         _source: (analysis as any)._source || 'unknown',
         _openai_error: (analysis as any)._openai_error || null,
+        final_category: (analysis as any).ai_triage?.dent_category ?? null,
+        category_floors: (analysis as any).ai_triage?.category_floors_applied ?? null,
         estimated_min: estMin,
         estimated_max: estMax,
         total_dents: dentCount,
         total_scratches: analysis.summary.total_scratches,
         pdr_incompatible: analysis.flags?.pdr_incompatible,
         hasPaintDamage,
+        needsInspection,
       });
 
       const payload = {
@@ -454,6 +495,8 @@ const EstimateAnalysis: React.FC = () => {
         dents: dentCount,
         scratches: analysis.summary.total_scratches,
         hasPaintDamage,
+        pdrSuitable: !hasPaintDamage,
+        inspectionRequired: needsInspection,
         damageCategory,
         location,
         repairTime,
@@ -484,6 +527,9 @@ const EstimateAnalysis: React.FC = () => {
   };
 
   const animateShops = (min: number, max: number) => {
+    // No valid price (paint/fallback/inspection) → shops stay in "Preparing
+    // quote..." state; the results page routes to the proper scenario screen.
+    if (!(min > 0 && max > 0)) return;
     const mid = Math.round((min + max) / 2);
     const prices = [`$${mid - 25}–$${mid + 25}`, `$${mid - 40}–$${mid + 10}`, `$${mid - 15}–$${mid + 45}`];
 
@@ -516,6 +562,62 @@ const EstimateAnalysis: React.FC = () => {
     window.setTimeout(() => {
       setShops((prev) => prev.map((shop, i) => (i >= 3 ? { ...shop, status: 'analyzing' } : shop)));
     }, 4300);
+  };
+
+  const totalMarkedRegions = damageRegions.reduce((sum, arr) => sum + arr.length, 0);
+
+  const handleRegionPointerDown = (photoIdx: number) => (e: React.PointerEvent) => {
+    const target = e.target as HTMLElement;
+    if (target.closest('[data-region-delete]') || target.closest('[data-region-chip]')) return;
+    e.preventDefault();
+    const rect = containerRefs.current[photoIdx]?.getBoundingClientRect();
+    if (!rect) return;
+    const { x, y } = pointerToPct(e.clientX, e.clientY, rect);
+    setRegionDrag({ photoIdx, x1: x, y1: y, x2: x, y2: y });
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+  };
+
+  const handleRegionPointerMove = (photoIdx: number) => (e: React.PointerEvent) => {
+    if (!regionDrag || regionDrag.photoIdx !== photoIdx) return;
+    const rect = containerRefs.current[photoIdx]?.getBoundingClientRect();
+    if (!rect) return;
+    const { x, y } = pointerToPct(e.clientX, e.clientY, rect);
+    setRegionDrag((prev) => (prev ? { ...prev, x2: x, y2: y } : null));
+  };
+
+  const handleRegionPointerUp = (photoIdx: number) => (e: React.PointerEvent) => {
+    if (!regionDrag || regionDrag.photoIdx !== photoIdx) return;
+    const region = regionFromDrag(
+      nextId.current++,
+      regionDrag.x1,
+      regionDrag.y1,
+      regionDrag.x2,
+      regionDrag.y2,
+    );
+    if (region) {
+      setDamageRegions((prev) =>
+        prev.map((arr, pi) => (pi !== photoIdx ? arr : [...arr, region]))
+      );
+    }
+    setRegionDrag(null);
+    try {
+      (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
+    } catch {
+      /* pointer already released */
+    }
+  };
+
+  const handleDeleteRegion = (photoIdx: number, regionId: number) => (e: React.MouseEvent) => {
+    e.stopPropagation();
+    setDamageRegions((prev) =>
+      prev.map((arr, pi) => (pi !== photoIdx ? arr : arr.filter((r) => r.id !== regionId)))
+    );
+  };
+
+  const handleStartAnalysis = () => {
+    if (totalMarkedRegions === 0) return;
+    setAwaitingUserMarking(false);
+    runAnalysis(allRegionsToPolygons(damageRegions));
   };
 
   const handleMarkerDown = (photoIdx: number, markerIdx: number) => (e: React.PointerEvent) => {
@@ -572,7 +674,8 @@ const EstimateAnalysis: React.FC = () => {
     if (current && analysisInfo) {
       try {
         const parsed = JSON.parse(current);
-        const markerCount = markers.reduce((sum, group) => sum + group.length, 0);
+        const markerCount = damageRegions.reduce((sum, group) => sum + group.length, 0)
+          || markers.reduce((sum, group) => sum + group.length, 0);
         const next = {
           ...parsed,
           location: analysisInfo.panelName,
@@ -722,6 +825,183 @@ const EstimateAnalysis: React.FC = () => {
       </div>
     </div>
   );
+
+  if (awaitingUserMarking && photosLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center" style={{ background: '#eef2f8' }}>
+        <div className="text-center px-4">
+          <div className="w-10 h-10 border-4 border-[#4f46e5] border-t-transparent rounded-full animate-spin mx-auto mb-3" />
+          <p className="text-sm font-semibold text-[#111827]">Validating your photos…</p>
+          <p className="text-xs text-[#6b7280] mt-1">Checking each image is a vehicle panel before marking</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (awaitingUserMarking && photoUrls.length > 0) {
+    return (
+      <div className="min-h-screen" style={{ background: '#eef2f8' }}>
+        <EstimateHeader currentStep={1} />
+
+        <div className="max-w-5xl mx-auto px-4 py-8">
+          <div className="text-center mb-6">
+            <p className="text-xs font-black uppercase tracking-[0.14em] text-[#4f46e5] mb-2">Step 1 — Mark your damage</p>
+            <h1 className="text-2xl md:text-3xl font-extrabold text-[#111827]">Drag around each dent before we analyze</h1>
+            <p className="text-sm text-[#5f6b7b] mt-2 max-w-xl mx-auto">
+              Draw an ellipse around every damaged area. A nearby shop will review your photos and confirm the estimate.
+            </p>
+          </div>
+
+          <div className="bg-white rounded-[26px] border border-[#e8ebf3] p-4 md:p-6 shadow-sm">
+            <div className="flex items-center justify-between mb-4">
+              <p className="text-sm font-bold text-[#111827]">Your photos</p>
+              <span className="text-[11px] bg-[#eef2ff] text-[#4f46e5] font-semibold px-2.5 py-0.5 rounded-full">
+                {totalMarkedRegions} damage area{totalMarkedRegions !== 1 ? 's' : ''} marked
+              </span>
+            </div>
+
+            <div className={`grid gap-3 ${photoUrls.length === 1 ? 'grid-cols-1' : 'grid-cols-2'}`}>
+              {photoUrls.map((url, i) => {
+                const regions = damageRegions[i] ?? [];
+                const dragPreview =
+                  regionDrag?.photoIdx === i
+                    ? {
+                        left: Math.min(regionDrag.x1, regionDrag.x2),
+                        top: Math.min(regionDrag.y1, regionDrag.y2),
+                        width: Math.abs(regionDrag.x2 - regionDrag.x1),
+                        height: Math.abs(regionDrag.y2 - regionDrag.y1),
+                      }
+                    : null;
+
+                return (
+                  <div key={i} className="rounded-2xl border border-[#dbe4ff] bg-[#f8faff] p-1.5">
+                    {isMultiPanel && (
+                      <div className="flex items-center gap-1.5 px-1.5 pb-1.5 mb-1">
+                        <span className="w-6 h-6 rounded-lg bg-[#4f46e5] text-white text-[11px] font-bold flex items-center justify-center flex-shrink-0">{i + 1}</span>
+                        <span className="text-[13px] font-semibold text-[#111827]">
+                          {selectedPanelsOnLoad[i] ? (PANEL_LABEL_MAP[selectedPanelsOnLoad[i]] ?? `Panel ${i + 1}`) : `Panel ${i + 1}`}
+                        </span>
+                      </div>
+                    )}
+                    <div
+                      className="relative rounded-xl overflow-visible"
+                      style={{ aspectRatio: '16/9' }}
+                    >
+                      <div className="absolute inset-0 overflow-hidden rounded-xl bg-gray-100">
+                        <img src={url} alt={`Photo ${i + 1}`} className="w-full h-full object-cover pointer-events-none" />
+                        <div className="absolute inset-0 bg-gradient-to-t from-black/30 via-transparent to-black/5 pointer-events-none" />
+                      </div>
+
+                      <div
+                        ref={(el) => { containerRefs.current[i] = el; }}
+                        className="absolute inset-0 z-10 cursor-crosshair select-none rounded-xl"
+                        style={{ touchAction: 'none' }}
+                        onPointerDown={handleRegionPointerDown(i)}
+                        onPointerMove={handleRegionPointerMove(i)}
+                        onPointerUp={handleRegionPointerUp(i)}
+                        onPointerLeave={handleRegionPointerUp(i)}
+                      >
+                        {regions.map((r, ri) => (
+                          <div
+                            key={r.id}
+                            className="absolute pointer-events-none"
+                            style={{
+                              left: `${r.cx - r.rx}%`,
+                              top: `${r.cy - r.ry}%`,
+                              width: `${r.rx * 2}%`,
+                              height: `${r.ry * 2}%`,
+                            }}
+                          >
+                            <div className="w-full h-full rounded-full border-2 border-amber-400 bg-amber-400/25 shadow-[0_0_0_1px_rgba(255,255,255,0.6)]" />
+                            <span className="absolute -top-2 left-1/2 -translate-x-1/2 flex items-center justify-center w-6 h-6 rounded-full bg-amber-400 ring-2 ring-white text-[10px] font-black text-white shadow">
+                              {ri + 1}
+                            </span>
+                            <button
+                              type="button"
+                              data-region-delete
+                              aria-label={`Remove mark ${ri + 1}`}
+                              className="absolute pointer-events-auto flex items-center justify-center w-9 h-9 rounded-full bg-red-500 text-white text-lg font-bold shadow-lg hover:bg-red-600 active:scale-95 z-30"
+                              style={{ top: '0%', left: '100%', transform: 'translate(-25%, -50%)' }}
+                              onPointerDown={(e) => {
+                                e.preventDefault();
+                                e.stopPropagation();
+                              }}
+                              onClick={handleDeleteRegion(i, r.id)}
+                            >
+                              ×
+                            </button>
+                          </div>
+                        ))}
+
+                        {dragPreview && (
+                          <div
+                            className="absolute z-20 rounded-full border-2 border-dashed border-amber-300 bg-amber-300/15 pointer-events-none"
+                            style={{
+                              left: `${dragPreview.left}%`,
+                              top: `${dragPreview.top}%`,
+                              width: `${dragPreview.width}%`,
+                              height: `${dragPreview.height}%`,
+                            }}
+                          />
+                        )}
+
+                        <div className="absolute bottom-2 left-2 right-2 pointer-events-none">
+                          <span className="inline-flex items-center gap-1 bg-black/55 text-white text-[10px] font-medium px-2 py-0.5 rounded-full backdrop-blur-sm">
+                            {regions.length > 0 ? `${regions.length} marked` : 'Drag to draw ellipse'}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+
+                    {regions.length > 0 && (
+                      <div className="flex flex-wrap gap-1.5 px-1 pt-2">
+                        {regions.map((r, ri) => (
+                          <button
+                            key={r.id}
+                            type="button"
+                            data-region-chip
+                            onClick={handleDeleteRegion(i, r.id)}
+                            className="inline-flex items-center gap-1.5 rounded-full border border-[#fecaca] bg-[#fef2f2] px-2.5 py-1 text-[11px] font-semibold text-[#b91c1c] hover:bg-[#fee2e2] transition-colors"
+                          >
+                            Mark {ri + 1}
+                            <span className="w-4 h-4 rounded-full bg-red-500 text-white text-[10px] leading-none flex items-center justify-center">×</span>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+
+            <div className="mt-5 flex flex-col sm:flex-row gap-3">
+              <button
+                type="button"
+                onClick={handleStartAnalysis}
+                disabled={totalMarkedRegions === 0}
+                className="flex-1 rounded-xl py-3.5 px-4 text-white font-bold bg-gradient-to-r from-[#4f46e5] to-[#7c3aed] hover:brightness-110 transition-all disabled:opacity-45 disabled:cursor-not-allowed"
+              >
+                Analyze My Damage
+              </button>
+              <button
+                type="button"
+                onClick={handleUploadAnotherPhoto}
+                className="sm:w-auto rounded-xl py-3.5 px-5 font-semibold text-[#374151] bg-[#eef2ff] border border-[#d8def3] hover:bg-[#e4e9fb] transition-colors"
+              >
+                Upload different photo
+              </button>
+            </div>
+
+            <p className="text-[11px] text-[#9ca3af] mt-3 text-center">
+              Mark every visible dent. No price is shown until a shop reviews your photos and confirms the estimate.
+            </p>
+          </div>
+        </div>
+
+        <DarkFooter />
+      </div>
+    );
+  }
 
   if (stage === 4) {
     const elapsed = DISPATCH_TOTAL_SECONDS - dispatchSecondsLeft;
@@ -1015,14 +1295,16 @@ const EstimateAnalysis: React.FC = () => {
 
                 {analysisInfo && stage >= 3 && (
                   <p className="text-[11px] text-[#9ca3af] mb-2.5 leading-relaxed">
-                    Tap each photo to mark the dent location. Drag to reposition.
+                    Damage areas you marked before analysis.
                   </p>
                 )}
 
                 <div className={`grid gap-2.5 ${photoUrls.length === 1 ? 'grid-cols-1' : 'grid-cols-2'}`}>
                   {photoUrls.map((url, i) => {
+                    const photoRegions = damageRegions[i] ?? [];
                     const photoMarkers = markers[i] ?? [];
                     const detected = stage >= 3;
+                    const regionCount = photoRegions.length || photoMarkers.length;
                     return (
                       <div key={i} className="rounded-2xl border border-[#dbe4ff] bg-[#f8faff] p-1.5">
                         {isMultiPanel && (
@@ -1040,12 +1322,8 @@ const EstimateAnalysis: React.FC = () => {
                         )}
                         <div
                           ref={(el) => { containerRefs.current[i] = el; }}
-                          className={`relative rounded-xl overflow-hidden bg-gray-100 select-none ${detected ? 'cursor-crosshair' : ''}`}
+                          className="relative rounded-xl overflow-hidden bg-gray-100 select-none"
                           style={{ aspectRatio: '16/9', touchAction: 'none' }}
-                          onPointerMove={handleContainerMove(i)}
-                          onPointerUp={handleContainerUp}
-                          onPointerLeave={handleContainerUp}
-                          onClick={detected ? handleContainerClick(i) : undefined}
                         >
                           <img src={url} alt={`Photo ${i + 1}`} className="w-full h-full object-cover pointer-events-none" />
                           <div className="absolute inset-0 bg-gradient-to-t from-black/40 via-transparent to-black/10" />
@@ -1066,42 +1344,34 @@ const EstimateAnalysis: React.FC = () => {
                             </div>
                           )}
 
-                        {/* Numbered draggable markers */}
-                          {photoMarkers.map((m, mi) => (
+                        {/* User-marked damage ellipses (read-only on results) */}
+                          {photoRegions.map((r, ri) => (
                             <div
-                              key={m.id}
-                              className="absolute z-20"
-                              style={{ top: `${m.top}%`, left: `${m.left}%`, transform: 'translate(-50%,-50%)' }}
+                              key={r.id}
+                              className="absolute z-10 pointer-events-none"
+                              style={{
+                                left: `${r.cx - r.rx}%`,
+                                top: `${r.cy - r.ry}%`,
+                                width: `${r.rx * 2}%`,
+                                height: `${r.ry * 2}%`,
+                              }}
                             >
-                              <div
-                                className="relative cursor-grab active:cursor-grabbing"
-                                onPointerDown={handleMarkerDown(i, mi)}
-                              >
-                                <span className="absolute w-8 h-8 rounded-full bg-amber-400/30 animate-ping" style={{ inset: '-4px' }} />
-                                <span className="relative flex items-center justify-center w-6 h-6 rounded-full bg-amber-400 ring-2 ring-white shadow-lg text-[10px] font-black text-white">
-                                  {mi + 1}
-                                </span>
-                                <button
-                                  className="absolute -top-2.5 -right-2.5 w-4 h-4 rounded-full bg-red-500 text-white text-[10px] font-bold flex items-center justify-center shadow-md hover:bg-red-600 z-30 cursor-pointer"
-                                  onPointerDown={(e) => e.stopPropagation()}
-                                  onClick={handleDeleteMarker(i, mi)}
-                                  title="Remove marker"
-                                >
-                                  ×
-                                </button>
-                              </div>
+                              <div className="w-full h-full rounded-full border-2 border-amber-400 bg-amber-400/25 shadow-[0_0_0_1px_rgba(255,255,255,0.6)]" />
+                              <span className="absolute -top-2 left-1/2 -translate-x-1/2 flex items-center justify-center w-5 h-5 rounded-full bg-amber-400 ring-2 ring-white text-[9px] font-black text-white shadow">
+                                {ri + 1}
+                              </span>
                             </div>
                           ))}
 
                           <div className="absolute bottom-2 left-2 right-2 flex items-center gap-1.5">
                             {detected ? (
-                              photoMarkers.length > 0 ? (
+                              regionCount > 0 ? (
                                 <span className="inline-flex items-center gap-1 bg-white/90 text-[#374151] border border-[#e5e7eb] text-[10px] font-medium px-2 py-0.5 rounded-full shadow-sm backdrop-blur-sm">
-                                  {photoMarkers.length} damage location{photoMarkers.length !== 1 ? 's' : ''} marked
+                                  {regionCount} damage area{regionCount !== 1 ? 's' : ''} marked
                                 </span>
                               ) : (
                                 <span className="inline-flex items-center bg-white/90 text-[#6b7280] border border-[#e5e7eb] text-[10px] font-medium px-2.5 py-1 rounded-full shadow-sm backdrop-blur-sm mx-auto">
-                                  Tap to mark where the dent is
+                                  No damage areas marked
                                 </span>
                               )
                             ) : (
@@ -1130,7 +1400,7 @@ const EstimateAnalysis: React.FC = () => {
                     <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 text-center">
                       {[
                         { value: photoUrls.length, label: 'Panels Analyzed' },
-                        { value: markers.reduce((s, a) => s + a.length, 0), label: 'Dents Detected' },
+                        { value: damageRegions.reduce((s, a) => s + a.length, 0) || markers.reduce((s, a) => s + a.length, 0), label: 'Dents Detected' },
                         { value: analysisInfo.level, label: 'Avg. Damage Level', color: analysisInfo.level === 'Deep' ? '#ef4444' : analysisInfo.level === 'Medium' ? '#f59e0b' : '#22c55e' },
                         { value: analysisInfo.level === 'Deep' ? 'High' : analysisInfo.level === 'Medium' ? 'Medium' : 'Low', label: 'Repair Complexity', color: analysisInfo.level === 'Deep' ? '#ef4444' : analysisInfo.level === 'Medium' ? '#f59e0b' : '#22c55e' },
                         { value: bottomData?.repairTime ?? '1–2 hours', label: 'Est. Repair Time' },
@@ -1207,7 +1477,7 @@ const EstimateAnalysis: React.FC = () => {
                       {[
                         { value: analysisInfo.panelName, label: 'Panel' },
                         { value: analysisInfo.damageType, label: 'Type' },
-                        { value: markers.reduce((s, a) => s + a.length, 0), label: 'Marked Dents' },
+                        { value: damageRegions.reduce((s, a) => s + a.length, 0) || markers.reduce((s, a) => s + a.length, 0), label: 'Marked Dents' },
                         { value: analysisInfo.level, label: 'Damage Level', color: analysisInfo.level === 'Deep' ? '#ef4444' : analysisInfo.level === 'Medium' ? '#f59e0b' : '#22c55e' },
                         { value: bottomData?.repairTime ?? '1–2 hours', label: 'Est. Repair Time' },
                       ].map((item) => (

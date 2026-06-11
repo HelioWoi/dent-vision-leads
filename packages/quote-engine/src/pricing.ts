@@ -8,17 +8,18 @@
 import { PricingInput, PricingOutput, QuoteEngineConfig, PricingRule } from './types';
 
 // ─── Market-Rate Defaults (used when no partner config is available) ──────────
-// Based on standard Australian PDR market rates.
+// CANONICAL VALUES — must stay identical to the category table in
+// supabase/functions/_shared/pricing.ts (the single source of truth).
+// base × (1 + 22% margin) = the category's priceMax in that table.
 // Partner app overrides these via adminService → DB config.
-// Leads app uses these as the public estimate baseline.
 export const DEFAULT_PDR_PRICING_RULES: PricingRule[] = [
-  { range: '0-30mm',   price: 85   },
-  { range: '31-60mm',  price: 150  },
-  { range: '61-90mm',  price: 250  },
-  { range: '91-160mm', price: 400  },
-  { range: '161-260mm',price: 650  },
-  { range: '261-400mm',price: 950  },
-  { range: '401-600mm',price: 1400 },
+  { range: '0-30mm',   price: 118 },
+  { range: '31-60mm',  price: 180 },
+  { range: '61-90mm',  price: 258 },
+  { range: '91-160mm', price: 293 },
+  { range: '161-260mm',price: 392 },
+  { range: '261-400mm',price: 490 },
+  { range: '401-600mm',price: 680 },
 ];
 
 export const DEFAULT_PDR_MARGIN = 22; // 22% default margin

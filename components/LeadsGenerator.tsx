@@ -6,7 +6,8 @@ import LiveScanPanelSelector from './LiveScanPanelSelector';
 import LiveScanView from './LiveScanView';
 import LiveScanPauseView from './LiveScanPauseView';
 import UploadMultiPanelModal from './UploadMultiPanelModal';
-import { verifyIsCarImage } from '../services/geminiServiceAdapter';
+import { PanelPhotoGroup } from '../utils/panelPhotoUpload';
+import { validateVehiclePhotos } from '../utils/validateVehiclePhotos';
 import { PanelType, VehicleType } from '../types';
 import { runLiveScanAnalysis } from '../features/live-scan/liveScanOrchestrator';
 
@@ -118,10 +119,16 @@ const LeadsGenerator: React.FC = () => {
     setLiveScanPermissionError(null);
 
     try {
-      const validationFrame = frames[Math.floor(frames.length / 2)] || frames[0];
-      const validation = await verifyIsCarImage(validationFrame);
+      // Sample first, middle, and last frames — all must pass vehicle validation.
+      const sampleIndices = [...new Set([
+        0,
+        Math.floor(frames.length / 2),
+        frames.length - 1,
+      ].filter((i) => i >= 0 && i < frames.length))];
+      const sampleFrames = sampleIndices.map((i) => frames[i]);
+      const { accepted, rejected } = await validateVehiclePhotos(sampleFrames);
 
-      if (!validation.is_car) {
+      if (rejected || accepted.length < sampleFrames.length) {
         sessionStorage.removeItem('estimateData');
         sessionStorage.removeItem('liveScanDispatchMode');
         sessionStorage.removeItem('liveScanFullAnalysis');
@@ -333,13 +340,14 @@ const LeadsGenerator: React.FC = () => {
     setShowUploadMultiPanel(true);
   };
 
-  const handleUploadPhotosReady = (files: File[], panels: PanelType[]) => {
-    (window as any).__leadUploadFiles = files;
-    (window as any).__leadSelectedPanels = panels;
-    setHasFiles(files.length > 0);
+  const handleUploadPhotosReady = (groups: PanelPhotoGroup[]) => {
+    (window as any).__leadUploadByPanel = groups;
+    (window as any).__leadSelectedPanels = groups.map((g) => g.panel);
+    (window as any).__leadUploadFiles = groups.flatMap((g) => g.photos);
+    setHasFiles(groups.some((g) => g.photos.length > 0));
     setShowUploadMultiPanel(false);
     setUploadSelectedPanels([]);
-    if (files.length > 0) navigateToFlow();
+    if (groups.some((g) => g.photos.length > 0)) navigateToFlow();
   };
 
   const handleDrop = (e: React.DragEvent) => {

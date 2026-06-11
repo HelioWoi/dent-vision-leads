@@ -1,6 +1,16 @@
 import { corsHeaders, fail, ok } from '../_shared/response.ts';
 import { generateGeminiJson } from '../_shared/gemini.ts';
 import { generateOpenAIVisionJson, isOpenAIConfigured } from '../_shared/openai.ts';
+import { isNonVehicleSubject, isVehicleImageAccepted } from '../_shared/imageValidation.ts';
+import {
+  NO_PRICE,
+  categoryBySizeMm,
+  categoryMidpointMm,
+  parseSizeRangeUpperMm,
+  priceForCategory,
+  pricingByCategory,
+  resolveCategory,
+} from '../_shared/pricing.ts';
 
 // ─── Step 1: Gemini Flash triage — fast, cheap, determines image usability ────
 
@@ -35,6 +45,8 @@ const GEMINI_TRIAGE_PROMPT = [
 
 const OPENAI_DEEP_ANALYSIS_PROMPT = [
   'You are an expert PDR (Paintless Dent Repair) damage analysis system for pre-estimation.',
+  'FIRST: set valid_image=false and image_is_vehicle=false for screenshots, UI, dashboards, spreadsheets, documents, websites, or any non-vehicle image.',
+  'If valid_image=false, set damage_detected=false, dent_count=0, suggested_base_price=0.',
   'Analyze the provided vehicle damage image(s) and return a detailed structured assessment.',
   '',
   'PANEL IDENTIFICATION — set panel_detected to one of:',
@@ -63,10 +75,12 @@ const OPENAI_DEEP_ANALYSIS_PROMPT = [
   '- Deformation covers 25–50% of visible panel area → minimum Category 4 (91–160mm)',
   '- Deformation covers 10–25% of visible panel area → minimum Category 3 (61–90mm)',
   '- Deformation covers <10% of visible panel area → Category 1–2',
-  'Stress line rule: if you see 2+ stress crease lines spanning across the panel → minimum Category 5.',
+  'Stress line rule: if you see 2+ stress crease lines spanning most of the panel → minimum Category 5.',
   'Boot/trunk rule: a crease or collapse covering most of the boot lid → minimum Category 6.',
-  'NEVER assign Category 1 (≤30mm) when the deformation is clearly broad or spans multiple stress lines.',
-  'When in doubt between two categories, choose the HIGHER one — undersizing is worse than oversizing.',
+  'SMALL BODYLINE DENT (common): a shallow nick or small crease sitting ON a body line but under 30mm with localized reflection pinch → Category 1, dent_type=soft_dent or sharp_dent (NOT bodyline_dent).',
+  'Use dent_type=bodyline_dent ONLY when the crease significantly deforms the body line over >90mm with clear metal stress.',
+  'Do NOT treat broad reflection highlights or panel curvature as deformation area.',
+  'Measure the actual crease/dent length — not the full distorted reflection zone.',
   '',
   'CLASSIFICATION FACTORS:',
   '- Reflection distortion: subtle=shallow, strong/wavy=deep deformation',
@@ -77,6 +91,14 @@ const OPENAI_DEEP_ANALYSIS_PROMPT = [
   '- Paint damage indicators (cracks, chips, exposed primer)',
   '',
   'DENT TYPES: soft_dent | sharp_dent | crease_dent | collapsed_dent | bodyline_dent | edge_dent | bumper_damage | collision_like',
+  '',
+  'BODYLINE / CREASE RULES:',
+  '- Small shallow dent on a body line (<30mm, localized pinch) → Category 1–2, dent_type=soft_dent or sharp_dent.',
+  '- A crease ON or ACROSS a body line with clear metal stress over >90mm → dent_type="bodyline_dent", minimum Category 5.',
+  '- A vertical or diagonal sharp crease with visible metal stress/warping over >90mm → dent_type="crease_dent", minimum Category 5.',
+  '- Collapsed or heavily stretched metal → dent_type="collapsed_dent", minimum Category 6.',
+  '- If the deformation distorts reflections across a large area of the door panel → size_score >= 4.',
+  '- Door handle visible and dent wraps around or through it → location_score >= 4.',
   '',
   'SCORING (1–5 each):',
   'size_score: 1=tiny(<30mm) 2=small(31-60mm) 3=medium(61-160mm) 4=large(161-400mm) 5=massive(>400mm)',
@@ -95,6 +117,7 @@ const OPENAI_DEEP_ANALYSIS_PROMPT = [
   '- Do NOT go below category base price',
   '- bodyshop_approval_required is always true — AI is pre-estimate only',
   '- estimated_min = category base price, estimated_max = category range max',
+  '- Size from actual metal deformation length, not reflection spread or user ellipse size.',
   '',
   'IMPORTANT:',
   '- If no damage visible, set damage_detected=false and suggested_base_price=0',
@@ -109,6 +132,8 @@ const OPENAI_DEEP_ANALYSIS_PROMPT = [
 
 const GEMINI_DENT_ANALYSIS_PROMPT = [
   'You are an expert automotive dent analysis assistant for PDR pre-estimation.',
+  'FIRST: set valid_image=false and image_is_vehicle=false for screenshots, UI, dashboards, spreadsheets, documents, websites, or any non-vehicle image.',
+  'If valid_image=false, set damage_detected=false, dent_count=0, suggested_base_price=0.',
   'Analyze ONLY exterior vehicle body-panel damage from all provided photos together.',
   'If the same dent appears in multiple photos/angles, count it once (no double counting).',
   '',
@@ -123,7 +148,12 @@ const GEMINI_DENT_ANALYSIS_PROMPT = [
   'When in doubt, choose the LARGER size estimate.',
   '',
   'Depth: Shallow=subtle reflection distortion | Medium=clear deformation | Deep=sharp crease/collapse.',
-  'Severity: Minor=small/shallow | Moderate=medium or multiple | Severe=large/deep/crease/broad deformation.',
+  'Severity: Minor=small/shallow/localized | Moderate=medium or multiple | Severe=large/deep/crease spanning panel.',
+  '',
+  'SMALL DENT ON BODY LINE: shallow nick <30mm on body line → size_cm 1-3, severity=Minor, Category 1.',
+  'BODYLINE / CREASE (large only): dent on body line with stress over >90mm → size_cm >= 20, severity=Severe, dent_type=bodyline_dent.',
+  'Vertical crease with stress lines → size_cm >= 25, depth=Deep.',
+  'NEVER return dent_count=0 when clear deformation is visible.',
   '',
   'PRICING TABLE (AUD) — use these exact values for estimated_min/estimated_max:',
   '0-30mm: $118-$144 | 31-60mm: $180-$220 | 61-90mm: $258-$315',
@@ -196,59 +226,28 @@ type GeminiDentModel = {
 type AnalyzeDentsInput = {
   images?: string[];
   imageTypes?: string[];
+  userPolygons?: [number, number][][];
   vehicleDetails?: { vehicleType?: string };
 };
 
-// ─── Pricing Table — canonical source of truth (AUD, 22% margin) ────────────
+const USER_GUIDE_PREFIX = (polygons: [number, number][][]) =>
+  polygons.length
+    ? [
+        '',
+        'USER MARKED DAMAGE REGIONS (normalized 0–1 coordinates):',
+        JSON.stringify(polygons),
+        'The customer drew ellipses around WHERE the damage is — location guide only.',
+        'Analyze the marked region(s) for dent count, type, and category.',
+        'IMPORTANT: ellipse size ≠ dent size. Measure the actual crease/dent metal deformation inside the mark.',
+        'A small localized crease inside a large ellipse is still Category 1–2 if under 30mm.',
+        'Each marked region confirms damage is present. Do not ignore marked areas.',
+      ].join('\n')
+    : '';
 
-const PRICING_TABLE = [
-  { category: 1, range: '0-30mm',    minMm:   0, maxMm:  30, priceMin: 118, priceMax: 144 },
-  { category: 2, range: '31-60mm',   minMm:  31, maxMm:  60, priceMin: 180, priceMax: 220 },
-  { category: 3, range: '61-90mm',   minMm:  61, maxMm:  90, priceMin: 258, priceMax: 315 },
-  { category: 4, range: '91-160mm',  minMm:  91, maxMm: 160, priceMin: 293, priceMax: 357 },
-  { category: 5, range: '161-260mm', minMm: 161, maxMm: 260, priceMin: 392, priceMax: 478 },
-  { category: 6, range: '261-400mm', minMm: 261, maxMm: 400, priceMin: 490, priceMax: 598 },
-  { category: 7, range: '400-600mm', minMm: 401, maxMm: 600, priceMin: 680, priceMax: 830 },
-] as const;
-
-const pricingByCategory = (cat: number) =>
-  PRICING_TABLE[Math.min(6, Math.max(0, Math.round(cat || 1) - 1))];
-
-const pricingBySizeMm = (sizeMm: number) => {
-  for (const r of PRICING_TABLE) {
-    if (sizeMm >= r.minMm && sizeMm <= r.maxMm) return r;
-  }
-  return sizeMm > 0 ? PRICING_TABLE[6] : PRICING_TABLE[0];
-};
-
-const resolvePrice = (
-  aiMin: number | undefined,
-  aiMax: number | undefined,
-  category: number | undefined,
-  largestDentMm: number,
-): { min: number; max: number } => {
-  // 1. Trust AI-provided prices when non-zero
-  if (aiMin && aiMin > 0) {
-    const resolvedMax = aiMax && aiMax > aiMin ? Math.round(aiMax) : Math.round(aiMin * 1.22);
-    console.info('[pricing] Using AI-provided prices', { aiMin, resolvedMax });
-    return { min: Math.round(aiMin), max: resolvedMax };
-  }
-  // 2. Map AI dent_category (1-7) to pricing table
-  if (category && category >= 1 && category <= 7) {
-    const entry = pricingByCategory(category);
-    console.info('[pricing] Using category lookup', { category, entry });
-    return { min: entry.priceMin, max: entry.priceMax };
-  }
-  // 3. Map dent size in mm to pricing table
-  if (largestDentMm > 0) {
-    const entry = pricingBySizeMm(largestDentMm);
-    console.info('[pricing] Using size lookup', { largestDentMm, entry });
-    return { min: entry.priceMin, max: entry.priceMax };
-  }
-  // 4. Last resort: Category 1 minimum — NEVER $250 hardcoded default
-  console.warn('[pricing] No pricing signals from AI — using Category 1 minimum $118/$144');
-  return { min: 118, max: 144 };
-};
+// ─── Pricing — canonical table lives in ../_shared/pricing.ts ────────────────
+// Category resolution takes the MAXIMUM of all signals (never under-quote) and
+// the price ALWAYS comes from the canonical table — AI dollar values are
+// logged for telemetry but never trusted as the price source.
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -268,11 +267,41 @@ const severityMap: Record<string, 'Minor' | 'Moderate' | 'Severe'> = {
   minor: 'Minor', medium: 'Moderate', moderate: 'Moderate', severe: 'Severe',
 };
 
-const buildResponseFromOpenAI = (vehicleType: string, ai: OpenAIAnalysis) => {
-  const dentCount = Math.max(0, Math.round(ai.dent_count || 0));
-  const largestDentMm = dentCount > 0 ? (ai.dent_category || 1) * 30 : 0;
-  const { min, max } = resolvePrice(ai.estimated_min, ai.estimated_max, ai.dent_category, largestDentMm);
-  console.info('[analyze-dents-secure] OpenAI resolved price', { min, max, dent_category: ai.dent_category, estimated_min: ai.estimated_min, estimated_max: ai.estimated_max });
+const buildResponseFromOpenAI = (
+  vehicleType: string,
+  ai: OpenAIAnalysis,
+  userPolygons: [number, number][][] = [],
+) => {
+  const resolvedDentCount = Math.max(0, Math.round(ai.dent_count || 0));
+  const { category, reasons } = resolveCategory({
+    aiCategory: ai.dent_category,
+    sizeMm: parseSizeRangeUpperMm(ai.dent_size_range),
+    sizeScore: ai.size_score,
+    stressScore: ai.stress_score,
+    geometryScore: ai.geometry_score,
+    locationScore: ai.location_score,
+    dentType: ai.dent_type,
+    severity: ai.severity,
+  });
+  const markedCount = userPolygons.length;
+  const dentCount = resolvedDentCount > 0
+    ? resolvedDentCount
+    : markedCount > 0
+      ? markedCount
+      : ai.damage_detected
+        ? 1
+        : 0;
+  const { min, max } = dentCount > 0 ? priceForCategory(category, dentCount) : NO_PRICE;
+  const largestDentMm = dentCount > 0 ? categoryMidpointMm(category) : 0;
+  console.info('[analyze-dents-secure] OpenAI resolved price', {
+    min,
+    max,
+    final_category: category,
+    category_floors: reasons,
+    ai_dent_category: ai.dent_category,
+    ai_estimated_min_ignored: ai.estimated_min,
+    ai_estimated_max_ignored: ai.estimated_max,
+  });
   const scratchCount = Math.max(0, Math.round(ai.scratch_count || 0));
   const confidence = Math.min(0.99, Math.max(0.45, Number(ai.confidence || 0.82)));
   const severity = severityMap[String(ai.severity || 'minor').toLowerCase()] || 'Minor';
@@ -286,8 +315,9 @@ const buildResponseFromOpenAI = (vehicleType: string, ai: OpenAIAnalysis) => {
     image_quality: ai.image_quality || 'acceptable',
     damage_detected: ai.damage_detected ?? true,
     panel_detected: ai.panel_detected || 'unknown',
-    dent_category: Math.min(7, Math.max(1, Math.round(ai.dent_category || 1))),
-    dent_size_range: ai.dent_size_range || '0-30mm',
+    dent_category: category,
+    category_floors_applied: reasons,
+    dent_size_range: pricingByCategory(category).range,
     dent_type: ai.dent_type || 'soft_dent',
     severity: severity,
     size_score: Math.min(5, Math.max(1, Math.round(ai.size_score || 1))),
@@ -316,7 +346,7 @@ const buildResponseFromOpenAI = (vehicleType: string, ai: OpenAIAnalysis) => {
         estimated_panel_cost_AUD: { min, max },
         dents: dentCount > 0
           ? Array.from({ length: Math.min(dentCount, 5) }, () => ({
-              size_cm: Math.round(((ai.dent_category || 1) * 1.8 + 1) * 10) / 10,
+              size_cm: Math.round(largestDentMm / 10 * 10) / 10,
               depth: (ai.stress_score || 1) >= 4 ? 'Deep' : (ai.stress_score || 1) >= 3 ? 'Medium' : 'Shallow' as any,
               severity_score: Math.min(0.95, (((ai.size_score || 1) + (ai.stress_score || 1)) / 10)),
               confidence,
@@ -353,11 +383,37 @@ const buildResponseFromOpenAI = (vehicleType: string, ai: OpenAIAnalysis) => {
   };
 };
 
-const buildResponseFromGemini = (vehicleType: string, model: GeminiDentModel, triage?: GeminiTriage) => {
-  const dentCount = Math.max(0, Math.round(model.dent_count || 0));
+const buildResponseFromGemini = (
+  vehicleType: string,
+  model: GeminiDentModel,
+  triage?: GeminiTriage,
+  userPolygons: [number, number][][] = [],
+) => {
+  // If triage saw damage but Gemini returned 0 dents, trust triage (never under-count).
+  let dentCount = Math.max(0, Math.round(model.dent_count || 0));
+  if (dentCount === 0 && userPolygons.length > 0) {
+    dentCount = userPolygons.length;
+    console.info('[analyze-dents-secure] Gemini dent_count=0 but user marked regions — using', dentCount);
+  } else if (dentCount === 0 && triage?.damage_detected) {
+    dentCount = 1;
+    console.info('[analyze-dents-secure] Gemini dent_count=0 but triage damage_detected — using 1');
+  }
   const largestDentMm = (model.dents || []).reduce((m, d) => Math.max(m, (d.size_cm || 0) * 10), 0);
-  const { min, max } = resolvePrice(model.estimated_min, model.estimated_max, undefined, largestDentMm);
-  console.info('[analyze-dents-secure] Gemini resolved price', { min, max, estimated_min: model.estimated_min, estimated_max: model.estimated_max, largestDentMm });
+  const { category, reasons } = resolveCategory({
+    aiCategory: categoryBySizeMm(largestDentMm),
+    sizeMm: largestDentMm,
+    severity: model.severity,
+  });
+  const { min, max } = dentCount > 0 ? priceForCategory(category, dentCount) : NO_PRICE;
+  console.info('[analyze-dents-secure] Gemini resolved price', {
+    min,
+    max,
+    final_category: category,
+    category_floors: reasons,
+    largestDentMm,
+    ai_estimated_min_ignored: model.estimated_min,
+    ai_estimated_max_ignored: model.estimated_max,
+  });
   const scratchCount = Math.max(0, Math.round(model.scratch_count || 0));
   const confidence = Math.min(0.99, Math.max(0.45, Number(model.confidence || 0.82)));
 
@@ -411,14 +467,16 @@ const buildResponseFromGemini = (vehicleType: string, model: GeminiDentModel, tr
 
 const hardFallback = (vehicleType: string, reason: string) => {
   console.warn('[analyze-dents-secure] hardFallback triggered:', reason);
-  const entry = PRICING_TABLE[0];
+  // HONESTY RULE: a failed analysis NEVER produces a price. Zero cost +
+  // review_required routes the user to the inspection flow instead of
+  // showing a fake Category 1 estimate.
   return {
     panels: [{
       panel_name: 'unknown',
       dent_count: 0,
       scratch_count: 0,
       modifiers: { aluminium: false, access_difficulty: 'low', hail_cluster: false },
-      estimated_panel_cost_AUD: { min: entry.priceMin, max: entry.priceMax },
+      estimated_panel_cost_AUD: { ...NO_PRICE },
       dents: [],
       scratches: [],
     }],
@@ -428,7 +486,7 @@ const hardFallback = (vehicleType: string, reason: string) => {
       total_scratches: 0,
       overall_severity: 'Unknown' as const,
       base_callout_applied: false,
-      estimated_total_cost_AUD: { min: entry.priceMin, max: entry.priceMax },
+      estimated_total_cost_AUD: { ...NO_PRICE },
       confidence_overall: 0.4,
     },
     next_best_captures: [{ tip: 'Please upload a clearer photo of the damaged panel.', distance_m: '0.8m', reason }],
@@ -456,6 +514,8 @@ Deno.serve(async (req) => {
     const body = (await req.json()) as AnalyzeDentsInput;
     const images = Array.isArray(body.images) ? body.images : [];
     const imageTypes = Array.isArray(body.imageTypes) ? body.imageTypes : [];
+    const userPolygons = Array.isArray(body.userPolygons) ? body.userPolygons : [];
+    const userGuide = USER_GUIDE_PREFIX(userPolygons);
 
     if (!images.length) {
       return fail('No images provided', 'INVALID_PAYLOAD', 400);
@@ -483,13 +543,18 @@ Deno.serve(async (req) => {
       console.warn('[analyze-dents-secure] Gemini triage failed, proceeding', triageError);
     }
 
-    // ── Reject only clear non-vehicle content ────────────────────────────────
+    // ── Reject non-vehicle content (strict) ──────────────────────────────────
     const subject = String(triage.detected_subject || '').toLowerCase();
-    const hardNonVehicle = /\b(screenshot|interface|website|document|logo|illustration|mockup|render|receipt|invoice|id\s*card|credit\s*card)\b/;
-    const invalidPart = /\b(interior cabin|dashboard view|steering wheel|engine bay|undercarriage|wheel only)\b/;
-
-    if (hardNonVehicle.test(subject) || invalidPart.test(subject)) {
-      console.info('[analyze-dents-secure] Hard-blocked non-vehicle', { detected_subject: triage.detected_subject });
+    if (
+      triage.valid_image === false ||
+      triage.image_is_vehicle === false ||
+      isNonVehicleSubject(subject)
+    ) {
+      console.info('[analyze-dents-secure] Blocked non-vehicle image', {
+        detected_subject: triage.detected_subject,
+        valid_image: triage.valid_image,
+        image_is_vehicle: triage.image_is_vehicle,
+      });
       return fail(
         'Please upload a clear exterior photo of your vehicle showing the damaged panel.',
         'INVALID_IMAGE',
@@ -509,9 +574,23 @@ Deno.serve(async (req) => {
     if (isOpenAIConfigured()) {
       try {
         const aiResult = await generateOpenAIVisionJson<OpenAIAnalysis>(
-          OPENAI_DEEP_ANALYSIS_PROMPT,
+          OPENAI_DEEP_ANALYSIS_PROMPT + userGuide,
           imageSlice,
         );
+
+        if (aiResult.valid_image === false || aiResult.image_is_vehicle === false) {
+          console.info('[analyze-dents-secure] OpenAI rejected non-vehicle image', {
+            valid_image: aiResult.valid_image,
+            image_is_vehicle: aiResult.image_is_vehicle,
+            notes: aiResult.notes,
+          });
+          return fail(
+            'Please upload a clear exterior photo of your vehicle showing the damaged panel.',
+            'INVALID_IMAGE',
+            422,
+          );
+        }
+
         console.info('[analyze-dents-secure] OpenAI analysis complete', {
           dent_category: aiResult.dent_category,
           dent_type: aiResult.dent_type,
@@ -519,7 +598,7 @@ Deno.serve(async (req) => {
           pdr_suitability: aiResult.pdr_suitability,
           manual_review_recommended: aiResult.manual_review_recommended,
         });
-        return ok(buildResponseFromOpenAI(vehicleType, aiResult));
+        return ok(buildResponseFromOpenAI(vehicleType, aiResult, userPolygons));
       } catch (openAIError) {
         _openaiError = String(openAIError);
         console.warn('[analyze-dents-secure] OpenAI failed, falling back to Gemini', _openaiError);
@@ -532,10 +611,10 @@ Deno.serve(async (req) => {
     // ── Step 2b: Gemini dent analysis (fallback when OpenAI unavailable) ────
     try {
       const geminiResult = await generateGeminiJson<GeminiDentModel>(
-        GEMINI_DENT_ANALYSIS_PROMPT,
+        GEMINI_DENT_ANALYSIS_PROMPT + userGuide,
         imageSlice,
       );
-      return ok({ ...buildResponseFromGemini(vehicleType, geminiResult, triage), _openai_error: _openaiError });
+      return ok({ ...buildResponseFromGemini(vehicleType, geminiResult, triage, userPolygons), _openai_error: _openaiError });
     } catch (geminiError) {
       console.warn('[analyze-dents-secure] Gemini analysis failed, using hard fallback', geminiError);
       return ok({ ...hardFallback(vehicleType, 'Fallback estimate used. Please upload a clearer photo for better accuracy.'), _openai_error: _openaiError });

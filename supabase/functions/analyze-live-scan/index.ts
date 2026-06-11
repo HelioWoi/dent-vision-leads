@@ -1,6 +1,13 @@
 import { corsHeaders, fail, ok } from '../_shared/response.ts';
 import { generateGeminiJson } from '../_shared/gemini.ts';
 import { generateOpenAIVisionJson, isOpenAIConfigured } from '../_shared/openai.ts';
+import { isNonVehicleSubject } from '../_shared/imageValidation.ts';
+import {
+  parseSizeRangeUpperMm,
+  priceForCategory,
+  pricingByCategory,
+  resolveCategory,
+} from '../_shared/pricing.ts';
 
 type AnalyzeLiveScanInput = {
   frames?: string[];
@@ -18,6 +25,9 @@ type AnalyzeLiveScanModelResponse = {
 };
 
 type OpenAILiveScanResponse = {
+  valid_image?: boolean;
+  image_is_vehicle?: boolean;
+  detected_subject?: string;
   dent_count?: number;
   scratch_count?: number;
   dent_category?: number;
@@ -61,6 +71,8 @@ const LIVE_SCAN_ANALYSIS_PROMPT = [
 
 const OPENAI_LIVE_SCAN_PROMPT = [
   'You are an expert PDR (Paintless Dent Repair) damage analysis system analyzing a sequence of live scan frames.',
+  'FIRST: set valid_image=false and image_is_vehicle=false for screenshots, UI, dashboards, spreadsheets, documents, or any non-vehicle frames.',
+  'If valid_image=false, set dent_count=0, suggested_base_price=0.',
   'All frames show the same vehicle and damage area — analyze them together, do not double-count.',
   '',
   'DAMAGE CATEGORIES — use these EXACT base prices (AUD, 22% margin included):',
@@ -78,7 +90,7 @@ const OPENAI_LIVE_SCAN_PROMPT = [
   'Use vehicle references: door handle ~180mm, fuel cap ~165mm, wheel ~450mm.',
   '',
   'Return ONLY valid JSON:',
-  '{"dent_count":number,"scratch_count":number,"dent_category":number,"dent_size_range":string,"dent_type":string,"severity":"Minor|Moderate|Severe|Unknown","estimated_min":number,"estimated_max":number,"size_score":number,"stress_score":number,"geometry_score":number,"location_score":number,"access_score":number,"pdr_suitability":"excellent|good|fair|poor|not_pdr","manual_review_recommended":boolean,"suggested_base_price":number,"confidence":number,"damage_location":string,"damage_type":"pdr|hail","needs_paint_repair":boolean,"notes":string}',
+  '{"valid_image":boolean,"image_is_vehicle":boolean,"detected_subject":string,"dent_count":number,"scratch_count":number,"dent_category":number,"dent_size_range":string,"dent_type":string,"severity":"Minor|Moderate|Severe|Unknown","estimated_min":number,"estimated_max":number,"size_score":number,"stress_score":number,"geometry_score":number,"location_score":number,"access_score":number,"pdr_suitability":"excellent|good|fair|poor|not_pdr","manual_review_recommended":boolean,"suggested_base_price":number,"confidence":number,"damage_location":string,"damage_type":"pdr|hail","needs_paint_repair":boolean,"notes":string}',
 ].join('\n');
 
 const fallbackPayload = (vehicleType: string) => ({
@@ -142,10 +154,39 @@ Deno.serve(async (req) => {
           frameSlice,
         );
 
+        if (
+          aiResult.valid_image === false ||
+          aiResult.image_is_vehicle === false ||
+          isNonVehicleSubject(String(aiResult.detected_subject || aiResult.notes || ''))
+        ) {
+          console.info('[analyze-live-scan] Blocked non-vehicle frames', {
+            valid_image: aiResult.valid_image,
+            image_is_vehicle: aiResult.image_is_vehicle,
+            detected_subject: aiResult.detected_subject,
+          });
+          return fail(
+            'Please scan a clear exterior view of your vehicle showing the damaged panel.',
+            'INVALID_IMAGE',
+            422,
+          );
+        }
+
         const dentCount = Math.max(0, Math.round(aiResult.dent_count || 0));
         const scratchCount = Math.max(0, Math.round(aiResult.scratch_count || 0));
-        const min = Math.max(120, Math.round(aiResult.estimated_min || aiResult.suggested_base_price! * 0.85 || 200));
-        const max = Math.max(min + 60, Math.round(aiResult.estimated_max || aiResult.suggested_base_price! * 1.15 || min + 130));
+        // Canonical category pricing — AI dollar values logged but never used as price source.
+        const { category, reasons } = resolveCategory({
+          aiCategory: aiResult.dent_category,
+          sizeMm: parseSizeRangeUpperMm(aiResult.dent_size_range),
+          sizeScore: aiResult.size_score,
+          stressScore: aiResult.stress_score,
+          geometryScore: aiResult.geometry_score,
+          severity: aiResult.severity,
+        });
+        const { min, max } = priceForCategory(category, Math.max(1, dentCount));
+        console.info('[analyze-live-scan] resolved category price', {
+          min, max, final_category: category, category_floors: reasons,
+          ai_estimated_min_ignored: aiResult.estimated_min, ai_estimated_max_ignored: aiResult.estimated_max,
+        });
         const confidence = Math.min(0.99, Math.max(0.45, Number(aiResult.confidence || 0.82)));
         const reviewRequired = !!(aiResult.manual_review_recommended) || dentCount > 6 || aiResult.pdr_suitability === 'not_pdr';
 
@@ -192,8 +233,9 @@ Deno.serve(async (req) => {
           },
           notes: aiResult.notes || 'Hybrid AI live-scan: OpenAI Vision deep analysis.',
           ai_triage: {
-            dent_category: Math.min(7, Math.max(1, Math.round(aiResult.dent_category || 1))),
-            dent_size_range: aiResult.dent_size_range || '0-30mm',
+            dent_category: category,
+            category_floors_applied: reasons,
+            dent_size_range: pricingByCategory(category).range,
             dent_type: aiResult.dent_type || 'soft_dent',
             severity: severity,
             size_score: Math.min(5, Math.max(1, Math.round(aiResult.size_score || 1))),
@@ -224,8 +266,9 @@ Deno.serve(async (req) => {
 
       const dentCount = Math.max(0, Math.round(modelResult.dent_count || 0));
       const scratchCount = Math.max(0, Math.round(modelResult.scratch_count || 0));
-      const min = Math.max(120, 190 + dentCount * 45 + scratchCount * 30);
-      const max = min + 130;
+      // Canonical category pricing from severity (Gemini live-scan has no size data).
+      const { category: gemCategory } = resolveCategory({ severity: modelResult.severity });
+      const { min, max } = priceForCategory(gemCategory, Math.max(1, dentCount));
 
       return ok({
         panels: [

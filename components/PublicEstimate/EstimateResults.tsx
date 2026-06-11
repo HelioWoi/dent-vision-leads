@@ -156,7 +156,10 @@ const EstimateResults: React.FC = () => {
     if (raw) {
       const parsed: EstimateData = JSON.parse(raw);
       setData(parsed);
-      setShops(buildShops(parsed.estimateMin || 250, parsed.estimateMax || 395));
+      // HONESTY RULE: never invent a price. Shops are only built from a real
+      // estimate; missing/zero price routes to the inspection scenario.
+      const hasRealPrice = (parsed.estimateMin ?? 0) > 0 && (parsed.estimateMax ?? 0) > 0;
+      setShops(hasRealPrice ? buildShops(parsed.estimateMin, parsed.estimateMax) : []);
       const resolvedScenario: FallbackScenario | null = forcedByHash
         ? forcedByHash
         : isFallbackScenario(forcedBySession)
@@ -169,7 +172,9 @@ const EstimateResults: React.FC = () => {
               ? 'not-suitable-pdr'
               : parsed.inspectionRequired === true
                 ? 'inspection-required'
-                : null;
+                : !hasRealPrice && !parsed.isDemo
+                  ? 'inspection-required'
+                  : null;
 
       setFallbackScenario(resolvedScenario);
       return;
