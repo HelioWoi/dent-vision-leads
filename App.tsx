@@ -4,6 +4,8 @@ import LeadFlow from './components/LeadFlow'
 import EstimateAnalysis from './components/PublicEstimate/EstimateAnalysis'
 import EstimateResults from './components/PublicEstimate/EstimateResults'
 import BookingForm from './components/PublicEstimate/BookingForm'
+import ServiceReviewPage from './components/PublicEstimate/ServiceReviewPage'
+import PartnerQuickRespondPage from './components/Partner/PartnerQuickRespondPage'
 import AdminPlatform from './components/Admin/AdminPlatform'
 import PartnerPlatform from './components/Partner/PartnerPlatform'
 
@@ -48,6 +50,8 @@ const App: React.FC = () => {
   if (routePath === '#/estimate-analysis') return <EstimateAnalysis />
   if (routePath === '#/estimate-results') return <EstimateResults />
   if (routePath === '#/booking-form') return <BookingForm />
+  if (routePath === '#/service-review') return <ServiceReviewPage />
+  if (routePath === '#/p/lead') return <PartnerQuickRespondPage />
 
   return <LeadsGenerator />
 }

@@ -1,6 +1,10 @@
 import { corsHeaders, fail, ok } from '../_shared/response.ts';
 import { generateGeminiJson } from '../_shared/gemini.ts';
-import { isVehicleImageAccepted } from '../_shared/imageValidation.ts';
+import { generateOpenAIVisionJson, isOpenAIConfigured } from '../_shared/openai.ts';
+import {
+  VERIFY_VEHICLE_PROMPT,
+  isVehicleImageAccepted,
+} from '../_shared/imageValidation.ts';
 
 type VerifyCarImageInput = {
   image?: string;
@@ -12,6 +16,38 @@ type VerifyCarImageModelResponse = {
   is_car?: boolean;
   reason?: string;
   detected_subject?: string;
+};
+
+const verifyWithModel = async (
+  image: string,
+  mimeType: string,
+): Promise<VerifyCarImageModelResponse> => {
+  let lastError: unknown;
+
+  try {
+    return await generateGeminiJson<VerifyCarImageModelResponse>(
+      VERIFY_VEHICLE_PROMPT,
+      [{ base64: image, mimeType }],
+    );
+  } catch (geminiError) {
+    lastError = geminiError;
+    console.warn('[verify-car-image] Gemini failed, trying OpenAI', geminiError);
+  }
+
+  if (isOpenAIConfigured()) {
+    try {
+      return await generateOpenAIVisionJson<VerifyCarImageModelResponse>(
+        VERIFY_VEHICLE_PROMPT,
+        [{ base64: image, mimeType }],
+        400,
+      );
+    } catch (openAIError) {
+      lastError = openAIError;
+      console.warn('[verify-car-image] OpenAI verify failed', openAIError);
+    }
+  }
+
+  throw lastError ?? new Error('No verification model available');
 };
 
 Deno.serve(async (req) => {
@@ -26,7 +62,7 @@ Deno.serve(async (req) => {
   try {
     const body = (await req.json()) as VerifyCarImageInput;
     const image = body.image || '';
-    const imageType = body.imageType || '';
+    const imageType = body.imageType || 'image/jpeg';
 
     if (!image) {
       return fail('Missing image payload', 'INVALID_PAYLOAD', 400);
@@ -41,21 +77,7 @@ Deno.serve(async (req) => {
     }
 
     try {
-      const modelResult = await generateGeminiJson<VerifyCarImageModelResponse>(
-        [
-          'You are a strict image gatekeeper for a PDR (Paintless Dent Repair) automotive damage system.',
-          'ONLY accept clear photos of vehicle EXTERIOR panels, paint, dents, scratches, or bodywork.',
-          'REJECT (is_valid=false) for ANY of these:',
-          '- Screenshots, UI, websites, apps, dashboards, spreadsheets, documents, presentations',
-          '- Project management boards, task lists, charts, tables, progress bars',
-          '- People, food, animals, furniture, interiors, engine bays, unrelated objects',
-          '- Blurry images where no vehicle surface is visible',
-          'When unsure whether it is a vehicle exterior photo, set is_valid=false.',
-          'Respond ONLY with strict JSON: {"is_valid": boolean, "reason": string, "detected_subject": string}.',
-        ].join('\n'),
-        [{ base64: image, mimeType: imageType || 'image/jpeg' }],
-      );
-
+      const modelResult = await verifyWithModel(image, imageType);
       const decision = isVehicleImageAccepted({
         isValid: modelResult.is_valid,
         isCar: modelResult.is_car,
@@ -74,8 +96,7 @@ Deno.serve(async (req) => {
         reason: modelResult.reason || decision.reason,
       });
     } catch (modelError) {
-      // Fail CLOSED — never proceed with unverified images
-      console.warn('[verify-car-image] Gemini unavailable, rejecting image', modelError);
+      console.warn('[verify-car-image] All verify models failed', modelError);
       return ok({
         is_car: false,
         reason: 'Could not verify this image. Please upload a clear photo of your vehicle.',

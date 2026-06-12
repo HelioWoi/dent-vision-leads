@@ -1,13 +1,9 @@
 import { PanelType } from '../types';
 import { verifyIsCarImage } from '../services/geminiServiceAdapter';
+import { PHOTO_SLOT_HINTS } from './photoCaptureTips';
 
+export { PHOTO_SLOT_HINTS };
 export const PHOTOS_PER_PANEL = 3;
-
-export const PHOTO_SLOT_HINTS = [
-  { label: 'Close-up', hint: 'Dent detail' },
-  { label: 'Angled', hint: 'Side angle' },
-  { label: 'Wide', hint: 'Full panel' },
-] as const;
 
 export interface PanelPhotoGroup {
   panel: PanelType;

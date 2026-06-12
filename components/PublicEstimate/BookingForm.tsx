@@ -2,6 +2,10 @@ import React, { useEffect, useMemo, useState } from 'react';
 import EstimateHeader from './EstimateHeader';
 import DarkFooter from '../DarkFooter';
 import { submitBookingRequest } from '../../services/bookingService';
+import { fetchBodyshopAvailability, AvailabilitySlot } from '../../services/bodyshopAvailabilityService';
+import { DEMO_BODYSHOP_ID } from '../../services/leadDispatchService';
+import { verifyLeadAssignment, LeadAssignmentVerification } from '../../services/leadAssignmentService';
+import { CustomerAvailabilityPicker } from './CustomerAvailabilityPicker';
 
 interface PanelBreakdownRow {
   panelLabel: string;
@@ -18,6 +22,9 @@ interface PanelBreakdownRow {
 interface StoredEstimateData {
   estimateMin?: number;
   estimateMax?: number;
+  pdrEstimateMin?: number;
+  pdrEstimateMax?: number;
+  paintRepairNeeded?: boolean;
   dents?: number;
   damageCategory?: string;
   location?: string;
@@ -30,6 +37,7 @@ interface StoredEstimateData {
 }
 
 interface StoredShopTarget {
+  id?: string;
   name?: string;
   price?: number;
 }
@@ -52,6 +60,10 @@ const BookingForm: React.FC = () => {
   const [previewMode, setPreviewMode] = useState(false);
   const [secondsToHome, setSecondsToHome] = useState(6);
   const [photoUrls, setPhotoUrls] = useState<string[]>([]);
+  const [availability, setAvailability] = useState<AvailabilitySlot[]>([]);
+  const [availabilityLoading, setAvailabilityLoading] = useState(true);
+  const [assignment, setAssignment] = useState<LeadAssignmentVerification | null>(null);
+  const [assignmentLoading, setAssignmentLoading] = useState(true);
 
   useEffect(() => {
     window.scrollTo({ top: 0, left: 0, behavior: 'auto' });
@@ -87,6 +99,58 @@ const BookingForm: React.FC = () => {
     setPreferredDate(tomorrow.toISOString().split('T')[0]);
   }, []);
 
+  const bodyshopId = targetShop?.id
+    || sessionStorage.getItem('dispatchedBodyshopId')
+    || DEMO_BODYSHOP_ID;
+  const existingLeadId = sessionStorage.getItem('dispatchedLeadId') || undefined;
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!existingLeadId) {
+      setAssignment({ assigned: false, canBook: false });
+      setAssignmentLoading(false);
+      return;
+    }
+    setAssignmentLoading(true);
+    verifyLeadAssignment(existingLeadId, bodyshopId).then((result) => {
+      if (cancelled) return;
+      setAssignment(result);
+      setAssignmentLoading(false);
+    });
+    return () => { cancelled = true; };
+  }, [bodyshopId, existingLeadId]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setAvailabilityLoading(true);
+    fetchBodyshopAvailability(bodyshopId).then((slots) => {
+      if (cancelled) return;
+      setAvailability(slots);
+      if (slots.length) {
+        setPreferredDate((prev) => {
+          if (prev && slots.some((s) => s.slotDate === prev)) return prev;
+          return slots[0].slotDate;
+        });
+        setPreferredTime((prev) => {
+          const first = slots[0];
+          if (prev && slots.some((s) => s.timeLabel === prev)) return prev;
+          return first.timeLabel;
+        });
+      }
+      setAvailabilityLoading(false);
+    });
+    return () => { cancelled = true; };
+  }, [bodyshopId]);
+
+  useEffect(() => {
+    if (!preferredDate || !availability.length) return;
+    const daySlots = availability.filter((s) => s.slotDate === preferredDate);
+    if (!daySlots.length) return;
+    if (!daySlots.some((s) => s.timeLabel === preferredTime)) {
+      setPreferredTime(daySlots[0].timeLabel);
+    }
+  }, [preferredDate, availability, preferredTime]);
+
   useEffect(() => {
     const files = (window as any).__leadUploadFiles as File[] | undefined;
     if (!files?.length) return;
@@ -115,7 +179,7 @@ const BookingForm: React.FC = () => {
 
   const isEmailValid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(customerEmail.trim());
   const isPhoneValid = customerPhone.trim().length >= 8;
-  const canSubmit = customerName.trim().length >= 2 && isEmailValid && isPhoneValid && rego.trim().length >= 2 && postalCode.trim().length >= 3 && preferredDate && agreeLiability;
+  const canSubmit = customerName.trim().length >= 2 && isEmailValid && isPhoneValid && rego.trim().length >= 2 && postalCode.trim().length >= 3 && preferredDate && preferredTime && agreeLiability && assignment?.canBook;
 
   const panelBreakdown = estimate?.panelBreakdownData ?? [];
   const hasPanelBreakdown = panelBreakdown.length > 1;
@@ -150,6 +214,8 @@ const BookingForm: React.FC = () => {
     setSubmitting(true);
     setError(null);
 
+    const existingLeadIdFromSession = sessionStorage.getItem('dispatchedLeadId') || undefined;
+
     const result = await submitBookingRequest({
       customerName: customerName.trim(),
       customerEmail: customerEmail.trim(),
@@ -163,10 +229,15 @@ const BookingForm: React.FC = () => {
       damageCategory: estimate?.damageCategory,
       location: estimate?.location,
       dents: Number(estimate?.dents || 1),
-      estimateMin: Number(estimate?.estimateMin || 0),
-      estimateMax: Number(estimate?.estimateMax || 0),
+      estimateMin: Number(estimate?.pdrEstimateMin ?? (estimate?.estimateMin || 0)),
+      estimateMax: Number(estimate?.pdrEstimateMax ?? (estimate?.estimateMax || 0)),
+      pdrEstimateMin: Number(estimate?.pdrEstimateMin ?? (estimate?.estimateMin || 0)),
+      pdrEstimateMax: Number(estimate?.pdrEstimateMax ?? (estimate?.estimateMax || 0)),
+      paintRepairNeeded: !!estimate?.paintRepairNeeded,
       targetShopName: targetShop?.name,
       targetShopPrice: targetShop?.price,
+      targetBodyshopId: bodyshopId,
+      existingLeadId: existingLeadIdFromSession,
     });
 
     setSubmitting(false);
@@ -197,8 +268,13 @@ const BookingForm: React.FC = () => {
             <p className="mt-4 text-xs font-bold tracking-[0.12em] uppercase text-[#4f46e5]">Booking request sent</p>
             <h1 className="mt-2 text-2xl sm:text-3xl font-extrabold text-[#111827]">Thank you. Your booking request is on its way.</h1>
             <p className="mt-3 text-sm text-[#5f6b7b]">
-              The selected bodyshop will contact you by email or phone to confirm the day and time.
+              The selected bodyshop will contact you by email or phone to confirm final details.
             </p>
+            {preferredDate && preferredTime ? (
+              <p className="mt-2 text-sm font-semibold text-[#111827]">
+                Requested: {new Date(`${preferredDate}T12:00:00`).toLocaleDateString('en-AU', { weekday: 'long', day: 'numeric', month: 'long' })} · {preferredTime}
+              </p>
+            ) : null}
             {previewMode ? (
               <p className="mt-3 text-xs font-semibold text-[#b45309]">
                 Preview mode: backend booking is not configured yet, so this request was not sent to the owner panel.
@@ -332,6 +408,28 @@ const BookingForm: React.FC = () => {
           <form onSubmit={handleSubmit} className="rounded-3xl border border-[#dbe4fa] bg-white p-5 sm:p-6 shadow-[0_24px_60px_-36px_rgba(15,23,42,0.55)]">
             <h2 className="text-[25px] leading-tight font-extrabold text-[#111827]">Complete your booking</h2>
 
+            {assignmentLoading ? (
+              <p className="mt-4 text-sm text-[#64748b]">Verifying bodyshop assignment…</p>
+            ) : assignment?.assigned && assignment.canBook ? (
+              <div className="mt-4 rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3">
+                <p className="text-xs font-bold uppercase tracking-[0.08em] text-emerald-800">Verified assignment</p>
+                <p className="mt-1 text-sm text-emerald-900">
+                  This booking is linked to <span className="font-semibold">{assignment.bodyshopName || targetShop?.name}</span>
+                  {assignment.matchId ? ` · Match ${assignment.matchId.slice(0, 8)}` : ''}
+                </p>
+                <p className="mt-1 text-xs text-emerald-800">Quote received — you can now choose a date and submit.</p>
+              </div>
+            ) : (
+              <div className="mt-4 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3">
+                <p className="text-xs font-bold uppercase tracking-[0.08em] text-amber-900">Waiting for shop quote</p>
+                <p className="mt-1 text-sm text-amber-950">
+                  {assignment?.assigned
+                    ? `Assigned to ${assignment.bodyshopName || targetShop?.name || 'bodyshop'}, but booking opens only after they send a quote (status: ${assignment.matchStatus || 'pending'}).`
+                    : 'We could not verify the lead assignment. Ask the bodyshop to respond to your request first.'}
+                </p>
+              </div>
+            )}
+
             <p className="mt-5 text-xs font-bold tracking-[0.12em] uppercase text-[#4f46e5]">Your details</p>
             <div className="mt-3 grid gap-3 sm:grid-cols-2">
               <label className="block sm:col-span-2">
@@ -391,29 +489,21 @@ const BookingForm: React.FC = () => {
             </div>
 
             <p className="mt-5 text-xs font-bold tracking-[0.12em] uppercase text-[#4f46e5]">Booking preference</p>
+            <div className="mt-3">
+              <CustomerAvailabilityPicker
+                slots={availability}
+                loading={availabilityLoading}
+                shopName={targetShop?.name}
+                selectedDate={preferredDate}
+                selectedTime={preferredTime}
+                onSelect={(date, timeLabel) => {
+                  setPreferredDate(date);
+                  setPreferredTime(timeLabel);
+                }}
+              />
+            </div>
+
             <div className="mt-3 grid gap-3 sm:grid-cols-2">
-              <label className="block">
-                <span className="text-xs font-semibold text-[#475569]">Preferred date</span>
-                <input
-                  value={preferredDate}
-                  onChange={(e) => setPreferredDate(e.target.value)}
-                  type="date"
-                  className="mt-1.5 w-full rounded-xl border border-[#d6deef] px-3 py-2.5 text-sm outline-none focus:border-[#5b5dfd]"
-                />
-              </label>
-
-              <label className="block">
-                <span className="text-xs font-semibold text-[#475569]">Preferred period</span>
-                <select
-                  value={preferredTime}
-                  onChange={(e) => setPreferredTime(e.target.value)}
-                  className="mt-1.5 w-full rounded-xl border border-[#d6deef] px-3 py-2.5 text-sm outline-none focus:border-[#5b5dfd]"
-                >
-                  <option>Morning (08:00-12:00)</option>
-                  <option>Afternoon (12:00-17:00)</option>
-                </select>
-              </label>
-
               <label className="block sm:col-span-2">
                 <span className="text-xs font-semibold text-[#475569]">Additional message (optional)</span>
                 <textarea

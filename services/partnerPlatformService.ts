@@ -1,15 +1,18 @@
 import { supabase } from './supabaseClient';
+import { CommissionSummary, fetchCommissionLedger } from './commissionService';
+import { DEFAULT_WHATSAPP_MESSAGE_TEMPLATE } from './partnerNotificationService';
 
 export type PartnerRouteSection =
   | 'dashboard'
   | 'leads'
   | 'quoted'
   | 'booked'
+  | 'complete'
   | 'performance'
   | 'notifications'
   | 'settings';
 
-export type PartnerLeadStatus = 'new' | 'quoted' | 'inspection' | 'booked' | 'declined' | 'expired';
+export type PartnerLeadStatus = 'new' | 'quoted' | 'inspection' | 'booked' | 'completed' | 'declined' | 'expired' | 'removed';
 
 export interface PartnerIdentity {
   isAuthenticated: boolean;
@@ -29,6 +32,9 @@ export interface PartnerNotificationSettings {
   smsEnabled: boolean;
   emailEnabled: boolean;
   soundEnabled: boolean;
+  whatsappEnabled: boolean;
+  whatsappPhone: string;
+  whatsappMessageTemplate: string;
 }
 
 export interface PartnerPerformance {
@@ -42,6 +48,7 @@ export interface PartnerPerformance {
 export interface PartnerLead {
   id: string;
   customerRef: string;
+  customerName: string;
   customerContact?: string;
   photoUrl: string;
   photoUrls: string[];
@@ -50,16 +57,47 @@ export interface PartnerLead {
   dentCount: number;
   aiEstimateMin: number;
   aiEstimateMax: number;
+  /** AI dent (PDR) estimate — same as aiEstimate when no split stored */
+  aiPdrEstimateMin?: number;
+  aiPdrEstimateMax?: number;
+  paintRepairNeeded?: boolean;
   distanceMiles: number;
   createdAt: string;
   responseDeadlineAt: string;
   status: PartnerLeadStatus;
   quoteMin?: number;
   quoteMax?: number;
+  quotePdrMin?: number;
+  quotePdrMax?: number;
+  quotePaintMin?: number;
+  quotePaintMax?: number;
   quoteNote?: string;
   respondedAt?: string;
   bookedAt?: string;
   isNew: boolean;
+  customerComment?: string;
+  vehicleRego?: string;
+  preferredDate?: string;
+  preferredTime?: string;
+  customerEmail?: string;
+  customerPhone?: string;
+  customerPostalCode?: string;
+  history: PartnerLeadEvent[];
+  matchId?: string;
+  assignedBodyshopId?: string;
+  assignedBodyshopName?: string;
+  completedAt?: string;
+  commissionAmount?: number;
+  commissionStatus?: 'pending' | 'earned' | 'invoiced' | 'paid' | 'cancelled';
+  serviceReviewRating?: number;
+  serviceReviewSubmitted?: boolean;
+}
+
+export interface PartnerLeadEvent {
+  id: string;
+  type: string;
+  message: string;
+  at: string;
 }
 
 export interface PartnerActivityItem {
@@ -70,11 +108,20 @@ export interface PartnerActivityItem {
 }
 
 export interface PartnerSettings {
+  businessName: string;
+  logoUrl?: string;
+  address: string;
+  phone: string;
+  email: string;
+  website: string;
+  postalCode: string;
   acceptingLeads: boolean;
   serviceRadiusKm: number;
   acceptedRepairTypes: string[];
   operatingHours: string;
   regionLabel: string;
+  acceptsPdr: boolean;
+  acceptsPaintRepair: boolean;
 }
 
 export interface PartnerDataBundle {
@@ -88,6 +135,11 @@ export interface PartnerDataBundle {
     supportLabel: string;
     ownerName: string;
     ownerEmail: string;
+    logoUrl?: string;
+    phone?: string;
+    address?: string;
+    website?: string;
+    shopEmail?: string;
   };
   metrics: {
     newLeadsToday: number;
@@ -99,6 +151,8 @@ export interface PartnerDataBundle {
   leads: PartnerLead[];
   respondedLeads: PartnerLead[];
   bookedJobs: PartnerLead[];
+  completedJobs: PartnerLead[];
+  commission: CommissionSummary;
   performance: PartnerPerformance;
   notificationSettings: PartnerNotificationSettings;
   activity: PartnerActivityItem[];
@@ -171,106 +225,11 @@ const safeSelectRows = async (table: string): Promise<any[] | null> => {
 };
 
 const getMockBundle = (identity?: PartnerIdentity): PartnerDataBundle => {
-  const bodyshopName = identity?.bodyshopName || 'Northside Dent Lab';
-  const ownerName = identity?.ownerName || 'Liam Baker';
-  const region = identity?.region || 'Brisbane, QLD';
-  const ownerEmail = identity?.email || 'liam@northsidedentlab.au';
-  const bodyshopId = identity?.bodyshopId || 'shop-brisbane-north';
-
-  const leads: PartnerLead[] = [
-    {
-      id: 'lead-p-1001',
-      customerRef: 'Mia T.',
-      photoUrl: DEMO_PHOTOS[0],
-      photoUrls: [DEMO_PHOTOS[0], DEMO_PHOTOS[1], DEMO_PHOTOS[2], DEMO_PHOTOS[3]],
-      damageType: 'Minor Dent',
-      panelLocation: 'Door Panel',
-      dentCount: 2,
-      aiEstimateMin: 320,
-      aiEstimateMax: 380,
-      distanceMiles: 0.4,
-      createdAt: minutesAgoISO(1),
-      responseDeadlineAt: secondsFromNowISO(47),
-      status: 'new',
-      isNew: true,
-    },
-    {
-      id: 'lead-p-1002',
-      customerRef: 'Noah C.',
-      photoUrl: DEMO_PHOTOS[1],
-      photoUrls: [DEMO_PHOTOS[1], DEMO_PHOTOS[0]],
-      damageType: 'Hail Damage',
-      panelLocation: 'Rear Quarter Panel',
-      dentCount: 6,
-      aiEstimateMin: 450,
-      aiEstimateMax: 600,
-      distanceMiles: 1.2,
-      createdAt: minutesAgoISO(2),
-      responseDeadlineAt: secondsFromNowISO(52),
-      status: 'new',
-      isNew: true,
-    },
-    {
-      id: 'lead-p-1003',
-      customerRef: 'Sofia N.',
-      photoUrl: DEMO_PHOTOS[2],
-      photoUrls: [DEMO_PHOTOS[2]],
-      damageType: 'Minor Dent',
-      panelLocation: 'Front Fender',
-      dentCount: 1,
-      aiEstimateMin: 280,
-      aiEstimateMax: 350,
-      distanceMiles: 2.7,
-      createdAt: minutesAgoISO(3),
-      responseDeadlineAt: secondsFromNowISO(58),
-      status: 'new',
-      isNew: true,
-    },
-    {
-      id: 'lead-p-1004',
-      customerRef: 'Emma D.',
-      customerContact: 'Phone visible after booking confirmation',
-      photoUrl: DEMO_PHOTOS[3],
-      photoUrls: [DEMO_PHOTOS[3], DEMO_PHOTOS[1], DEMO_PHOTOS[0]],
-      damageType: 'Minor Dent',
-      panelLocation: 'Rear Door',
-      dentCount: 2,
-      aiEstimateMin: 290,
-      aiEstimateMax: 340,
-      distanceMiles: 1.9,
-      createdAt: minutesAgoISO(18),
-      responseDeadlineAt: secondsFromNowISO(-1),
-      status: 'quoted',
-      quoteMin: 330,
-      quoteMax: 330,
-      respondedAt: minutesAgoISO(15),
-      isNew: false,
-    },
-    {
-      id: 'lead-p-1005',
-      customerRef: 'Jack W.',
-      customerContact: '+61 412 888 211',
-      photoUrl: DEMO_PHOTOS[0],
-      photoUrls: [DEMO_PHOTOS[0], DEMO_PHOTOS[1], DEMO_PHOTOS[2], DEMO_PHOTOS[3]],
-      damageType: 'Hail Damage',
-      panelLocation: 'Roof + Bonnet',
-      dentCount: 9,
-      aiEstimateMin: 500,
-      aiEstimateMax: 720,
-      distanceMiles: 0.9,
-      createdAt: minutesAgoISO(70),
-      responseDeadlineAt: secondsFromNowISO(-1),
-      status: 'booked',
-      quoteMin: 640,
-      quoteMax: 640,
-      respondedAt: minutesAgoISO(66),
-      bookedAt: minutesAgoISO(58),
-      isNew: false,
-    },
-  ];
-
-  const respondedLeads = leads.filter((lead) => lead.status === 'quoted').slice(0, 4);
-  const bookedJobs = leads.filter((lead) => lead.status === 'booked').slice(0, 4);
+  const bodyshopName = identity?.bodyshopName || 'Sunshine Coast PDR Co.';
+  const ownerName = identity?.ownerName || 'Demo Owner';
+  const region = identity?.region || 'Sunshine Coast, QLD';
+  const ownerEmail = identity?.email || 'heliocwoi@gmail.com';
+  const bodyshopId = identity?.bodyshopId || '550e8400-e29b-41d4-a716-446655440001';
 
   return {
     bodyshop: {
@@ -285,46 +244,241 @@ const getMockBundle = (identity?: PartnerIdentity): PartnerDataBundle => {
       ownerEmail,
     },
     metrics: {
-      newLeadsToday: leads.filter((lead) => lead.status === 'new').length,
-      pendingResponse: leads.filter((lead) => lead.status === 'new').length,
-      bookedJobs: bookedJobs.length,
-      acceptanceRate: 0.68,
-      avgResponseMinutes: 7,
+      newLeadsToday: 0,
+      pendingResponse: 0,
+      bookedJobs: 0,
+      acceptanceRate: 0,
+      avgResponseMinutes: 0,
     },
-    leads,
-    respondedLeads,
-    bookedJobs,
+    leads: [],
+    respondedLeads: [],
+    bookedJobs: [],
+    completedJobs: [],
+    commission: {
+      pendingJobs: 0,
+      pendingValue: 0,
+      earnedJobs: 0,
+      earnedCommission: 0,
+      paidCommission: 0,
+      totalDue: 0,
+      entries: [],
+    },
     performance: {
-      acceptanceRate: 0.68,
-      leadsReceived: 24,
-      quotesSent: 16,
-      jobsBooked: 4,
-      averageResponseMinutes: 7,
+      acceptanceRate: 0,
+      leadsReceived: 0,
+      quotesSent: 0,
+      jobsBooked: 0,
+      averageResponseMinutes: 0,
     },
     notificationSettings: {
       pushEnabled: true,
-      smsEnabled: true,
+      smsEnabled: false,
       emailEnabled: true,
       soundEnabled: true,
+      whatsappEnabled: true,
+      whatsappPhone: '',
+      whatsappMessageTemplate: DEFAULT_WHATSAPP_MESSAGE_TEMPLATE,
     },
-    activity: [
-      { id: 'act-1', text: 'New lead from Mia T. · Door dent · $320 estimate', kind: 'new', at: minutesAgoISO(2) },
-      { id: 'act-2', text: 'Emma D. booked your quote · Mazda 3 · $320', kind: 'booked', at: minutesAgoISO(5) },
-      { id: 'act-3', text: 'Lead expired · no response sent in 1 minute', kind: 'expired', at: minutesAgoISO(15) },
-      { id: 'act-4', text: 'Quote sent to Noah C. · Hail repair', kind: 'quoted', at: minutesAgoISO(22) },
-    ],
-    quickTip: 'Shops with response times under 5 minutes get 2x more booked jobs.',
+    activity: [],
+    quickTip: 'Respond within 5 minutes to maximise booking conversion on Sunshine Coast leads.',
     settings: {
+      businessName: bodyshopName,
+      logoUrl: undefined,
+      address: '',
+      phone: '',
+      email: ownerEmail,
+      website: '',
+      postalCode: '',
       acceptingLeads: true,
-      serviceRadiusKm: 20,
-      acceptedRepairTypes: ['Minor Dent', 'Hail Damage', 'Crease Dent'],
-      operatingHours: 'Mon-Sat 08:00-18:00',
+      serviceRadiusKm: 35,
+      acceptedRepairTypes: ['PDR Dent', 'Hail Damage', 'Crease Dent'],
+      operatingHours: 'Mon-Fri 07:30-17:30, Sat 08:00-12:00',
       regionLabel: region,
+      acceptsPdr: true,
+      acceptsPaintRepair: true,
     },
   };
 };
 
 const cloneBundle = <T,>(value: T): T => JSON.parse(JSON.stringify(value));
+
+const buildCustomerRef = (name?: string | null) => {
+  if (!name || name === 'Customer') return 'Customer';
+  const parts = String(name).trim().split(/\s+/);
+  const first = parts[0] || 'Customer';
+  const lastInitial = parts[1]?.[0];
+  return lastInitial ? `${first} ${lastInitial}.` : first;
+};
+
+const buildCustomerContact = (lead: any, status: PartnerLeadStatus) => {
+  if (status === 'expired' || status === 'removed') return undefined;
+  const name = lead?.customer_name ? String(lead.customer_name) : undefined;
+  const email = lead?.customer_email ? String(lead.customer_email) : undefined;
+  const phone = lead?.customer_phone ? String(lead.customer_phone) : undefined;
+  const postal = lead?.postal_code ? String(lead.postal_code) : undefined;
+  const parts = [name, email, phone, postal ? `Postcode ${postal}` : undefined].filter(Boolean);
+  return parts.length ? parts.join(' · ') : undefined;
+};
+
+const mapMatchRowsToLeads = (matches: any[], bodyshopName?: string): PartnerLead[] =>
+  matches.map((match, index) => {
+    const lead = match.lead_requests || match.lead || {};
+    const statusValue = String(match.status || 'new');
+    const status: PartnerLeadStatus =
+      statusValue === 'completed' ? 'completed'
+      : statusValue === 'booked' ? 'booked'
+      : statusValue === 'inspection' ? 'inspection'
+      : statusValue === 'declined' ? 'declined'
+      : statusValue === 'expired' ? 'expired'
+      : statusValue === 'removed' ? 'removed'
+      : statusValue === 'quoted' ? 'quoted'
+      : 'new';
+
+    const customerName = lead?.customer_name ? String(lead.customer_name) : 'Customer';
+
+    const createdAt = lead?.created_at || match.created_at || minutesAgoISO(120);
+    const responseDeadlineAt = match.response_deadline || new Date(new Date(createdAt).getTime() + 300 * 1000).toISOString();
+    const photoUrls = parsePhotoUrls(lead?.photo_urls || lead?.photo_url);
+    const fallbackPhoto = DEMO_PHOTOS[index % DEMO_PHOTOS.length];
+    const paintRepairNeeded = !!lead?.paint_repair_needed;
+    const pdrMin = Number(lead?.ai_pdr_estimate_min ?? lead?.ai_estimate_min ?? match.ai_estimate_min ?? 0);
+    const pdrMax = Number(lead?.ai_pdr_estimate_max ?? lead?.ai_estimate_max ?? match.ai_estimate_max ?? 0);
+
+    return {
+      id: String(lead?.id || match.lead_id || `lead-${index + 1}`),
+      customerName,
+      customerRef: buildCustomerRef(customerName),
+      customerContact: buildCustomerContact(lead, status),
+      photoUrl: photoUrls[0] || fallbackPhoto,
+      photoUrls: (photoUrls.length ? photoUrls : [fallbackPhoto]).slice(0, 4),
+      damageType: lead?.ai_damage_category || 'Dent Repair',
+      panelLocation: lead?.damage_location || 'Panel pending',
+      dentCount: Number(lead?.dent_count || 1),
+      aiEstimateMin: pdrMin,
+      aiEstimateMax: pdrMax,
+      aiPdrEstimateMin: pdrMin,
+      aiPdrEstimateMax: pdrMax,
+      paintRepairNeeded,
+      distanceMiles: Number(match.distance_miles || 1.3),
+      createdAt,
+      responseDeadlineAt,
+      status,
+      quoteMin: typeof match.shop_price_min === 'number' ? match.shop_price_min : undefined,
+      quoteMax: typeof match.shop_price_max === 'number' ? match.shop_price_max : undefined,
+      quotePdrMin: typeof match.quote_pdr_min === 'number' ? match.quote_pdr_min : undefined,
+      quotePdrMax: typeof match.quote_pdr_max === 'number' ? match.quote_pdr_max : undefined,
+      quotePaintMin: typeof match.quote_paint_min === 'number' ? match.quote_paint_min : undefined,
+      quotePaintMax: typeof match.quote_paint_max === 'number' ? match.quote_paint_max : undefined,
+      quoteNote: match.shop_note || undefined,
+      respondedAt: match.responded_at || undefined,
+      bookedAt: lead?.booked_at || match.booked_at || (status === 'booked' || status === 'completed' ? match.responded_at || match.created_at : undefined),
+      completedAt: lead?.completed_at || match.completed_at || undefined,
+      isNew: status === 'new' && new Date(createdAt).getTime() > Date.now() - 10 * 60 * 1000,
+      customerComment: lead?.customer_comment || undefined,
+      vehicleRego: lead?.vehicle_rego || undefined,
+      preferredDate: lead?.preferred_date || undefined,
+      preferredTime: lead?.preferred_time || undefined,
+      customerEmail: lead?.customer_email || undefined,
+      customerPhone: lead?.customer_phone || undefined,
+      customerPostalCode: lead?.postal_code ? String(lead.postal_code) : undefined,
+      history: [],
+      matchId: match?.id ? String(match.id) : undefined,
+      assignedBodyshopId: match?.bodyshop_id ? String(match.bodyshop_id) : undefined,
+      assignedBodyshopName: bodyshopName || undefined,
+    };
+  });
+
+const fetchLeadEvents = async (leadIds: string[]): Promise<Map<string, PartnerLeadEvent[]>> => {
+  const grouped = new Map<string, PartnerLeadEvent[]>();
+  if (!leadIds.length) return grouped;
+
+  try {
+    const { data, error } = await supabase
+      .from('lead_events' as any)
+      .select('id,lead_id,event_type,message,created_at')
+      .in('lead_id', leadIds)
+      .order('created_at', { ascending: true });
+
+    if (error || !data) return grouped;
+
+    for (const row of data) {
+      const leadId = String(row.lead_id);
+      const list = grouped.get(leadId) || [];
+      list.push({
+        id: String(row.id),
+        type: String(row.event_type || 'note'),
+        message: String(row.message || row.event_type || 'Update'),
+        at: String(row.created_at),
+      });
+      grouped.set(leadId, list);
+    }
+  } catch {
+    return grouped;
+  }
+
+  return grouped;
+};
+
+const attachLeadHistory = (leads: PartnerLead[], eventsByLead: Map<string, PartnerLeadEvent[]>): PartnerLead[] =>
+  leads.map((lead) => {
+    const dbEvents = eventsByLead.get(lead.id) || [];
+    const synthetic: PartnerLeadEvent[] = [
+      { id: `${lead.id}-created`, type: 'lead_created', message: 'Customer submitted damage request', at: lead.createdAt },
+    ];
+    if (lead.respondedAt) {
+      synthetic.push({
+        id: `${lead.id}-quoted`,
+        type: lead.status === 'inspection' ? 'inspection_requested' : 'quote_sent',
+        message: lead.quoteNote || `Shop responded (${lead.status})`,
+        at: lead.respondedAt,
+      });
+    }
+    if (lead.bookedAt) {
+      synthetic.push({
+        id: `${lead.id}-booked`,
+        type: 'booking_confirmed',
+        message: lead.preferredDate
+          ? `Booking scheduled for ${lead.preferredDate}${lead.preferredTime ? ` · ${lead.preferredTime}` : ''}`
+          : 'Customer confirmed booking',
+        at: lead.bookedAt,
+      });
+    }
+    if (lead.completedAt) {
+      synthetic.push({
+        id: `${lead.id}-completed`,
+        type: 'service_completed',
+        message: 'Service marked as delivered — customer review requested',
+        at: lead.completedAt,
+      });
+    }
+
+    const merged = [...synthetic];
+    for (const event of dbEvents) {
+      if (!merged.some((item) => item.id === event.id)) merged.push(event);
+    }
+    merged.sort((a, b) => +new Date(a.at) - +new Date(b.at));
+
+    return { ...lead, history: merged };
+  });
+
+const fetchPartnerMatches = async (bodyshopId: string): Promise<any[] | null> => {
+  try {
+    const { data, error } = await supabase
+      .from('shop_lead_matches' as any)
+      .select('*, lead_requests(*)')
+      .eq('bodyshop_id', bodyshopId)
+      .order('created_at', { ascending: false });
+
+    if (error) {
+      console.warn('[partner] fetchPartnerMatches error', error.message);
+      return null;
+    }
+    return data || [];
+  } catch (err) {
+    console.warn('[partner] fetchPartnerMatches exception', err);
+    return null;
+  }
+};
 
 const mapLeadRowsForPartner = (leadRows: any[], matchRows: any[], bodyshopId: string): PartnerLead[] => {
   const rowsById = new Map<string, any>();
@@ -337,7 +491,9 @@ const mapLeadRowsForPartner = (leadRows: any[], matchRows: any[], bodyshopId: st
     const lead = rowsById.get(String(match.lead_id));
     const statusValue = String(match.status || 'new');
     const status: PartnerLeadStatus =
-      statusValue === 'booked'
+      statusValue === 'completed'
+        ? 'completed'
+        : statusValue === 'booked'
         ? 'booked'
         : statusValue === 'inspection'
           ? 'inspection'
@@ -345,6 +501,8 @@ const mapLeadRowsForPartner = (leadRows: any[], matchRows: any[], bodyshopId: st
           ? 'declined'
           : statusValue === 'expired'
             ? 'expired'
+            : statusValue === 'removed'
+              ? 'removed'
             : statusValue === 'quoted'
               ? 'quoted'
               : 'new';
@@ -354,30 +512,66 @@ const mapLeadRowsForPartner = (leadRows: any[], matchRows: any[], bodyshopId: st
     const photoUrls = parsePhotoUrls((lead as any)?.photo_urls || (lead as any)?.photoUrls || lead?.photo_url);
     const fallbackPhoto = lead?.photo_url || DEMO_PHOTOS[index % DEMO_PHOTOS.length];
 
+    const paintRepairNeeded = !!(lead as any)?.paint_repair_needed;
+    const pdrMin = Number((lead as any)?.ai_pdr_estimate_min ?? lead?.ai_estimate_min ?? 0);
+    const pdrMax = Number((lead as any)?.ai_pdr_estimate_max ?? lead?.ai_estimate_max ?? 0);
+
+    const customerName = lead?.customer_name ? String(lead.customer_name) : 'Customer';
+
     return {
       id: String(lead?.id || match.lead_id || `lead-${index + 1}`),
-      customerRef: lead?.customer_name ? `${String(lead.customer_name).split(' ')[0]} ${String(lead.customer_name).split(' ')[1]?.[0] || ''}.` : 'Customer',
-      customerContact:
-        status === 'booked'
-          ? [lead?.customer_phone, lead?.customer_email].filter(Boolean).join(' · ') || 'Contact unlocked after booking'
-          : undefined,
+      customerName,
+      customerRef: buildCustomerRef(customerName),
+      customerContact: buildCustomerContact(lead, status),
       photoUrl: photoUrls[0] || fallbackPhoto,
       photoUrls: (photoUrls.length ? photoUrls : [fallbackPhoto]).slice(0, 4),
       damageType: lead?.ai_damage_category || 'Dent Repair',
       panelLocation: lead?.damage_location || 'Panel pending',
       dentCount: Number(lead?.dent_count || 1),
-      aiEstimateMin: Number(match.ai_estimate_min || lead?.ai_estimate_min || 0),
-      aiEstimateMax: Number(match.ai_estimate_max || lead?.ai_estimate_max || 0),
+      aiEstimateMin: pdrMin,
+      aiEstimateMax: pdrMax,
+      aiPdrEstimateMin: pdrMin,
+      aiPdrEstimateMax: pdrMax,
+      paintRepairNeeded,
       distanceMiles: Number(match.distance_miles || 1.3),
       createdAt,
       responseDeadlineAt,
       status,
       quoteMin: typeof match.shop_price_min === 'number' ? match.shop_price_min : undefined,
       quoteMax: typeof match.shop_price_max === 'number' ? match.shop_price_max : undefined,
+      quotePdrMin: typeof match.quote_pdr_min === 'number' ? match.quote_pdr_min : undefined,
+      quotePdrMax: typeof match.quote_pdr_max === 'number' ? match.quote_pdr_max : undefined,
+      quotePaintMin: typeof match.quote_paint_min === 'number' ? match.quote_paint_min : undefined,
+      quotePaintMax: typeof match.quote_paint_max === 'number' ? match.quote_paint_max : undefined,
       quoteNote: match.shop_note || undefined,
       respondedAt: match.responded_at || undefined,
-      bookedAt: status === 'booked' ? match.responded_at || match.created_at : undefined,
-      isNew: new Date(createdAt).getTime() > Date.now() - 4 * 60 * 1000,
+      bookedAt: lead?.booked_at || match.booked_at || (status === 'booked' || status === 'completed' ? match.responded_at || match.created_at : undefined),
+      completedAt: lead?.completed_at || match.completed_at || undefined,
+      isNew: status === 'new' && new Date(createdAt).getTime() > Date.now() - 10 * 60 * 1000,
+      customerComment: lead?.customer_comment || undefined,
+      vehicleRego: lead?.vehicle_rego || undefined,
+      preferredDate: lead?.preferred_date || undefined,
+      preferredTime: lead?.preferred_time || undefined,
+      customerEmail: lead?.customer_email || undefined,
+      customerPhone: lead?.customer_phone || undefined,
+      customerPostalCode: lead?.postal_code ? String(lead.postal_code) : undefined,
+      history: [],
+    };
+  });
+};
+
+const attachCommissionData = (leads: PartnerLead[], commission: CommissionSummary): PartnerLead[] => {
+  const byMatch = new Map(commission.entries.map((entry) => [entry.matchId, entry]));
+  return leads.map((lead) => {
+    if (!lead.matchId) return lead;
+    const entry = byMatch.get(lead.matchId);
+    if (!entry) return lead;
+    return {
+      ...lead,
+      commissionAmount: entry.commissionAmount,
+      commissionStatus: entry.status,
+      serviceReviewRating: entry.serviceReviewRating,
+      serviceReviewSubmitted: entry.serviceReviewSubmitted,
     };
   });
 };
@@ -385,8 +579,8 @@ const mapLeadRowsForPartner = (leadRows: any[], matchRows: any[], bodyshopId: st
 const computeMetrics = (leads: PartnerLead[]) => {
   const newLeadsToday = leads.filter((lead) => lead.status === 'new').length;
   const pendingResponse = leads.filter((lead) => lead.status === 'new').length;
-  const bookedJobs = leads.filter((lead) => lead.status === 'booked').length;
-  const quotesSent = leads.filter((lead) => lead.status === 'quoted' || lead.status === 'inspection' || lead.status === 'booked').length;
+  const bookedJobs = leads.filter((lead) => lead.status === 'booked' || lead.status === 'completed').length;
+  const quotesSent = leads.filter((lead) => lead.status === 'quoted' || lead.status === 'inspection' || lead.status === 'booked' || lead.status === 'completed').length;
   const acceptanceRate = leads.length > 0 ? bookedJobs / Math.max(1, quotesSent) : 0;
   return {
     newLeadsToday,
@@ -395,6 +589,18 @@ const computeMetrics = (leads: PartnerLead[]) => {
     acceptanceRate,
     avgResponseMinutes: 7,
   };
+};
+
+const linkOwnerUserId = async (owner: any, userId: string) => {
+  if (!owner?.id || owner.user_id === userId) return;
+  try {
+    await supabase
+      .from('bodyshop_owners' as any)
+      .update({ user_id: userId, last_login: new Date().toISOString() })
+      .eq('id', owner.id);
+  } catch {
+    // non-blocking
+  }
 };
 
 export const getPartnerIdentity = async (): Promise<PartnerIdentity> => {
@@ -448,6 +654,7 @@ export const getPartnerIdentity = async (): Promise<PartnerIdentity> => {
     }
 
     if (owner?.bodyshop_id) {
+      await linkOwnerUserId(owner, user.id);
       const { data: shop } = await supabase
         .from('bodyshops' as any)
         .select('id,business_name,region')
@@ -481,14 +688,41 @@ export const getPartnerIdentity = async (): Promise<PartnerIdentity> => {
     }
 
     if (email && partnerEmails().includes(email.toLowerCase())) {
+      const ownerByEmail = await supabase
+        .from('bodyshop_owners' as any)
+        .select('id,bodyshop_id,name')
+        .eq('email', email)
+        .maybeSingle();
+
+      if (ownerByEmail.data?.id) {
+        await linkOwnerUserId(ownerByEmail.data, user.id);
+      }
+
+      let shopName = 'Sunshine Coast PDR Co.';
+      let region = 'Sunshine Coast, QLD';
+      const shopId = ownerByEmail.data?.bodyshop_id
+        ? String(ownerByEmail.data.bodyshop_id)
+        : '550e8400-e29b-41d4-a716-446655440001';
+
+      if (ownerByEmail.data?.bodyshop_id) {
+        const { data: shop } = await supabase
+          .from('bodyshops' as any)
+          .select('business_name,region')
+          .eq('id', ownerByEmail.data.bodyshop_id)
+          .maybeSingle();
+        shopName = shop?.business_name || shopName;
+        region = shop?.region || region;
+      }
+
       return {
         isAuthenticated: true,
         isPartner: true,
         userId: user.id,
         email,
-        ownerName: email.split('@')[0] || 'Partner',
-        bodyshopName: 'Bodyshop Partner',
-        region: 'Unassigned Region',
+        bodyshopId: shopId,
+        bodyshopName: shopName,
+        ownerName: ownerByEmail.data?.name || email.split('@')[0] || 'Partner',
+        region,
         source: 'env_fallback',
       };
     }
@@ -558,27 +792,37 @@ export const signOutPartner = async () => {
 
 export const loadPartnerDataBundle = async (identity: PartnerIdentity): Promise<PartnerDataBundle> => {
   const mock = getMockBundle(identity);
-  if (!identity.bodyshopId) return cloneBundle(mock);
+  const bodyshopId = identity.bodyshopId || mock.bodyshop.id;
 
-  const [leadRows, matchRows, shopRows, notificationRows] = await Promise.all([
-    safeSelectRows('lead_requests'),
-    safeSelectRows('shop_lead_matches'),
-    safeSelectRows('bodyshops'),
-    safeSelectRows('notification_settings'),
+  const [matches, shopRow, notificationRows] = await Promise.all([
+    fetchPartnerMatches(bodyshopId),
+    supabase.from('bodyshops' as any).select('*').eq('id', bodyshopId).maybeSingle(),
+    supabase.from('notification_settings' as any).select('*').eq('bodyshop_id', bodyshopId).maybeSingle(),
   ]);
 
-  if (!leadRows || !matchRows || !shopRows) return cloneBundle(mock);
+  const shop = shopRow.data;
+  const notificationRow = notificationRows.data;
 
-  const partnerLeads = mapLeadRowsForPartner(leadRows, matchRows, identity.bodyshopId);
-  if (!partnerLeads.length) return cloneBundle(mock);
+  if (matches === null) return cloneBundle(mock);
 
-  const shop = shopRows.find((row) => String(row.id) === identity.bodyshopId);
+  let partnerLeads = mapMatchRowsToLeads(
+    matches,
+    shop?.business_name || identity.bodyshopName || mock.bodyshop.name,
+  ).filter((lead) => lead.status !== 'removed');
+  const [eventsByLead, commission] = await Promise.all([
+    fetchLeadEvents(partnerLeads.map((lead) => lead.id)),
+    fetchCommissionLedger(bodyshopId),
+  ]);
+  partnerLeads = attachLeadHistory(partnerLeads, eventsByLead);
+  partnerLeads = attachCommissionData(partnerLeads, commission);
   const metrics = computeMetrics(partnerLeads);
-  const notificationRow = (notificationRows || []).find((row) => String(row.bodyshop_id) === identity.bodyshopId);
+  const repairTypes = Array.isArray(notificationRow?.lead_categories_accepted)
+    ? notificationRow.lead_categories_accepted.map((t: string) => String(t))
+    : mock.settings.acceptedRepairTypes;
 
   const bundle: PartnerDataBundle = {
     bodyshop: {
-      id: identity.bodyshopId,
+      id: bodyshopId,
       name: shop?.business_name || identity.bodyshopName || mock.bodyshop.name,
       region: shop?.region || identity.region || mock.bodyshop.region,
       avatarInitials: toInitials(shop?.business_name || identity.bodyshopName || mock.bodyshop.name),
@@ -587,15 +831,22 @@ export const loadPartnerDataBundle = async (identity: PartnerIdentity): Promise<
       supportLabel: 'Contact Support',
       ownerName: identity.ownerName || mock.bodyshop.ownerName,
       ownerEmail: identity.email || mock.bodyshop.ownerEmail,
+      logoUrl: shop?.logo_url || undefined,
+      phone: shop?.phone || undefined,
+      address: shop?.address || undefined,
+      website: shop?.website || undefined,
+      shopEmail: shop?.email || undefined,
     },
     metrics,
     leads: partnerLeads,
-    respondedLeads: partnerLeads.filter((lead) => lead.status === 'quoted' || lead.status === 'inspection').slice(0, 8),
-    bookedJobs: partnerLeads.filter((lead) => lead.status === 'booked').slice(0, 8),
+    respondedLeads: partnerLeads.filter((lead) => lead.status === 'quoted' || lead.status === 'inspection'),
+    bookedJobs: partnerLeads.filter((lead) => lead.status === 'booked'),
+    completedJobs: partnerLeads.filter((lead) => lead.status === 'completed'),
+    commission,
     performance: {
       acceptanceRate: metrics.acceptanceRate,
       leadsReceived: partnerLeads.length,
-      quotesSent: partnerLeads.filter((lead) => lead.status === 'quoted' || lead.status === 'inspection' || lead.status === 'booked').length,
+      quotesSent: partnerLeads.filter((lead) => lead.status === 'quoted' || lead.status === 'inspection' || lead.status === 'booked' || lead.status === 'completed').length,
       jobsBooked: metrics.bookedJobs,
       averageResponseMinutes: metrics.avgResponseMinutes,
     },
@@ -604,6 +855,11 @@ export const loadPartnerDataBundle = async (identity: PartnerIdentity): Promise<
       smsEnabled: !!notificationRow?.sms_enabled,
       emailEnabled: notificationRow?.email_enabled !== false,
       soundEnabled: true,
+      whatsappEnabled: notificationRow?.whatsapp_enabled !== false,
+      whatsappPhone: notificationRow?.whatsapp_phone ? String(notificationRow.whatsapp_phone) : '',
+      whatsappMessageTemplate: notificationRow?.whatsapp_message_template
+        ? String(notificationRow.whatsapp_message_template)
+        : DEFAULT_WHATSAPP_MESSAGE_TEMPLATE,
     },
     activity: [
       {
@@ -615,12 +871,14 @@ export const loadPartnerDataBundle = async (identity: PartnerIdentity): Promise<
       ...partnerLeads.slice(0, 5).map((lead, index) => ({
         id: `live-${index + 2}`,
         text:
-          lead.status === 'booked'
+          lead.status === 'completed'
+            ? `${lead.customerRef} service completed`
+            : lead.status === 'booked'
             ? `${lead.customerRef} booked your quote`
             : lead.status === 'quoted'
               ? `Quote sent for ${lead.customerRef}`
               : `New lead from ${lead.customerRef}`,
-        kind: (lead.status === 'booked' ? 'booked' : lead.status === 'quoted' ? 'quoted' : 'new') as
+        kind: (lead.status === 'completed' || lead.status === 'booked' ? 'booked' : lead.status === 'quoted' ? 'quoted' : 'new') as
           | 'new'
           | 'quoted'
           | 'booked'
@@ -628,13 +886,24 @@ export const loadPartnerDataBundle = async (identity: PartnerIdentity): Promise<
         at: lead.respondedAt || lead.createdAt,
       })),
     ],
-    quickTip: 'Shops with response times under 5 minutes get 2x more booked jobs.',
+    quickTip: partnerLeads.length
+      ? 'Review paint-repair flags before quoting — customers see your PDR + paint breakdown.'
+      : 'Waiting for customer leads. Run a test estimate flow to dispatch a lead here.',
     settings: {
+      businessName: shop?.business_name || identity.bodyshopName || mock.bodyshop.name,
+      logoUrl: shop?.logo_url || undefined,
+      address: shop?.address || '',
+      phone: shop?.phone || '',
+      email: shop?.email || identity.email || '',
+      website: shop?.website || '',
+      postalCode: shop?.postal_code || '',
       acceptingLeads: shop?.notification_enabled !== false,
-      serviceRadiusKm: Number(shop?.service_radius || 20),
-      acceptedRepairTypes: ['Minor Dent', 'Hail Damage', 'Crease Dent'],
-      operatingHours: 'Mon-Sat 08:00-18:00',
-      regionLabel: shop?.region || identity.region || 'Unassigned Region',
+      serviceRadiusKm: Number(shop?.service_radius || 35),
+      acceptedRepairTypes: repairTypes,
+      operatingHours: shop?.operating_hours || 'Mon-Fri 07:30-17:30, Sat 08:00-12:00',
+      regionLabel: shop?.region || identity.region || 'Sunshine Coast, QLD',
+      acceptsPdr: shop?.accepts_pdr !== false,
+      acceptsPaintRepair: shop?.accepts_paint_repair !== false,
     },
   };
 
@@ -671,10 +940,13 @@ export const updatePartnerNotificationSettings = async (
       push_enabled: settings.pushEnabled,
       sms_enabled: settings.smsEnabled,
       email_enabled: settings.emailEnabled,
+      whatsapp_enabled: settings.whatsappEnabled,
+      whatsapp_phone: settings.whatsappPhone.trim() || null,
+      whatsapp_message_template: settings.whatsappMessageTemplate.trim() || DEFAULT_WHATSAPP_MESSAGE_TEMPLATE,
       dashboard_enabled: true,
-      primary_channel: settings.pushEnabled ? 'push' : settings.smsEnabled ? 'sms' : 'email',
+      primary_channel: settings.whatsappEnabled ? 'whatsapp' : settings.pushEnabled ? 'push' : settings.emailEnabled ? 'email' : 'dashboard',
       backup_channel: settings.emailEnabled ? 'email' : 'dashboard',
-      response_deadline_seconds: 60,
+      response_deadline_seconds: 300,
       retry_logic: '1 reminder at 60s, then route next bodyshop',
       notification_radius: 20,
       lead_categories_accepted: ['minor', 'medium', 'hail'],
@@ -690,13 +962,72 @@ export const updatePartnerNotificationSettings = async (
   }
 };
 
+export const updatePartnerSettings = async (
+  bodyshopId: string,
+  settings: PartnerSettings,
+) => {
+  try {
+    await supabase
+      .from('bodyshops' as any)
+      .update({
+        business_name: settings.businessName.trim(),
+        logo_url: settings.logoUrl || null,
+        address: settings.address.trim() || null,
+        phone: settings.phone.trim() || null,
+        email: settings.email.trim() || null,
+        website: settings.website.trim() || null,
+        postal_code: settings.postalCode.trim() || null,
+        active_status: settings.acceptingLeads,
+        notification_enabled: settings.acceptingLeads,
+        service_radius: settings.serviceRadiusKm,
+        operating_hours: settings.operatingHours,
+        accepts_pdr: settings.acceptsPdr,
+        accepts_paint_repair: settings.acceptsPaintRepair,
+      })
+      .eq('id', bodyshopId);
+
+    const { data: existing } = await supabase
+      .from('notification_settings' as any)
+      .select('id')
+      .eq('bodyshop_id', bodyshopId)
+      .maybeSingle();
+
+    const categories = [
+      ...(settings.acceptsPdr ? ['pdr', 'hail', 'crease'] : []),
+      ...(settings.acceptsPaintRepair ? ['paint'] : []),
+    ];
+
+    const payload = {
+      bodyshop_id: bodyshopId,
+      notification_radius: settings.serviceRadiusKm,
+      lead_categories_accepted: categories.length ? categories : settings.acceptedRepairTypes,
+    };
+
+    if (existing?.id) {
+      await supabase.from('notification_settings' as any).update(payload).eq('id', existing.id);
+    } else {
+      await supabase.from('notification_settings' as any).insert({
+        ...payload,
+        push_enabled: true,
+        email_enabled: true,
+        dashboard_enabled: true,
+        response_deadline_seconds: 300,
+      });
+    }
+  } catch {
+    return;
+  }
+};
+
 export const submitPartnerLeadResponse = async (
   bodyshopId: string,
   leadId: string,
   status: 'quoted' | 'inspection' | 'declined',
   quoteMin?: number,
   quoteMax?: number,
-  note?: string
+  note?: string,
+  quotePdr?: number,
+  quotePaint?: number,
 ) => {
   try {
     const { data: existing } = await supabase
@@ -712,6 +1043,10 @@ export const submitPartnerLeadResponse = async (
       status,
       shop_price_min: quoteMin ?? null,
       shop_price_max: quoteMax ?? null,
+      quote_pdr_min: quotePdr ?? null,
+      quote_pdr_max: quotePdr ?? null,
+      quote_paint_min: quotePaint ?? null,
+      quote_paint_max: quotePaint ?? null,
       shop_note: note || null,
       responded_at: new Date().toISOString(),
     };
@@ -721,7 +1056,44 @@ export const submitPartnerLeadResponse = async (
     } else {
       await supabase.from('shop_lead_matches' as any).insert(payload);
     }
+
+    const eventType = status === 'quoted' ? 'quote_sent' : status === 'inspection' ? 'inspection_requested' : 'lead_declined';
+    const eventMessage = note
+      || (status === 'quoted' ? `Quote sent: $${quoteMin ?? ''}${quoteMax && quoteMax !== quoteMin ? `–$${quoteMax}` : ''}` : `Shop marked lead as ${status}`);
+
+    await supabase.rpc('append_lead_event' as any, {
+      p_lead_id: leadId,
+      p_bodyshop_id: bodyshopId,
+      p_event_type: eventType,
+      p_message: eventMessage,
+      p_payload: {
+        quote_min: quoteMin ?? null,
+        quote_max: quoteMax ?? null,
+        quote_pdr: quotePdr ?? null,
+        quote_paint: quotePaint ?? null,
+      },
+    });
   } catch {
     return;
+  }
+};
+
+export const deletePartnerLead = async (bodyshopId: string, leadId: string): Promise<{ ok: boolean; error?: string }> => {
+  try {
+    const { error } = await supabase.rpc('delete_partner_lead' as any, {
+      p_bodyshop_id: bodyshopId,
+      p_lead_id: leadId,
+    });
+
+    if (error) {
+      return { ok: false, error: error.message };
+    }
+
+    return { ok: true };
+  } catch (error) {
+    return {
+      ok: false,
+      error: error instanceof Error ? error.message : 'Could not remove lead.',
+    };
   }
 };

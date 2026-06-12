@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import EstimateHeader from './EstimateHeader';
 import DarkFooter from '../DarkFooter';
-import { analyzeDents, verifyIsCarImage, identifyPanelsFromImages } from '../../services/geminiServiceAdapter';
+import { analyzeDents, identifyPanelsFromImages } from '../../services/geminiServiceAdapter';
 import { VehicleType, MaterialType, LightingType, PanelType } from '../../types';
 import { detectHailDamage } from '../../services/hailAnalysisService';
 import { priceForCategory } from '../../supabase/functions/_shared/pricing.ts';
@@ -15,7 +15,9 @@ import {
   PanelPhotoGroup,
   selectBestPhotosPerPanel,
 } from '../../utils/panelPhotoUpload';
-import { validateVehiclePhotos } from '../../utils/validateVehiclePhotos';
+import { dispatchLeadToBodyshops, fetchActiveBodyshops, DEMO_BODYSHOP_NAME } from '../../services/leadDispatchService';
+import { filterVerifiedVehiclePhotos, validateVehiclePhotos } from '../../utils/validateVehiclePhotos';
+import { PHOTO_CAPTURE_TIPS } from '../../utils/photoCaptureTips';
 
 type Stage = 1 | 2 | 3 | 4;
 
@@ -28,13 +30,16 @@ interface ShopRow {
   ago: string;
 }
 
-const BASE_SHOPS: ShopRow[] = [
-  { name: 'PDR Pro Studio',       initials: 'PDR', distance: '0.4 mi', status: 'reviewing', ago: '1 min ago' },
-  { name: 'Dent Masters LA',      initials: 'DM',  distance: '1.2 mi', status: 'reviewing', ago: '2 min ago' },
-  { name: 'Quick Dent Repair',    initials: 'QD',  distance: '1.8 mi', status: 'analyzing', ago: '2 min ago' },
-  { name: 'Elite PDR',            initials: 'EP',  distance: '2.1 mi', status: 'waiting',   ago: '3 min ago' },
-  { name: 'Prime Dent Solutions', initials: 'PS',  distance: '2.7 mi', status: 'waiting',   ago: '3 min ago' },
-];
+const toInitials = (name: string) =>
+  name.split(/\s+/).map((w) => w[0]).join('').slice(0, 3).toUpperCase() || 'PDR';
+
+const defaultShopRow = (): ShopRow => ({
+  name: DEMO_BODYSHOP_NAME,
+  initials: toInitials(DEMO_BODYSHOP_NAME),
+  distance: '1.3 km',
+  status: 'reviewing',
+  ago: 'just now',
+});
 
 const DOT_POSITIONS = [
   { top: '8%',  left: '12%' }, { top: '8%',  right: '12%' },
@@ -118,7 +123,8 @@ const normalizePanel = (value: string): string => {
 
 const EstimateAnalysis: React.FC = () => {
   const [stage, setStage] = useState<Stage>(1);
-  const [shops, setShops] = useState<ShopRow[]>(BASE_SHOPS);
+  const [shops, setShops] = useState<ShopRow[]>([defaultShopRow()]);
+  const [dispatchError, setDispatchError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [bottomData, setBottomData] = useState<{ damageCategory: string; location: string; repairTime: string } | null>(null);
   const [zip, setZip] = useState('');
@@ -150,6 +156,21 @@ const EstimateAnalysis: React.FC = () => {
   useEffect(() => {
     window.scrollTo({ top: 0, left: 0, behavior: 'auto' });
   }, [stage, invalidImageFallback]);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetchActiveBodyshops().then((active) => {
+      if (cancelled || !active.length) return;
+      setShops(active.map((shop, i) => ({
+        name: shop.business_name,
+        initials: toInitials(shop.business_name),
+        distance: i === 0 ? '1.3 km' : `${(1.3 + i * 0.8).toFixed(1)} km`,
+        status: 'reviewing' as const,
+        ago: 'just now',
+      })));
+    });
+    return () => { cancelled = true; };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -337,13 +358,18 @@ const EstimateAnalysis: React.FC = () => {
       const files = (window as any).__leadUploadFiles as File[] | undefined;
       if (!files?.length) throw new Error('No images provided. Please go back and upload a photo.');
 
-      const verified = (
-        await Promise.all(files.map(async (f) => ({ f, ok: (await verifyIsCarImage(f)).is_car })))
-      ).filter((v) => v.ok).map((v) => v.f);
+      const polygons = userPolygons ?? allRegionsToPolygons(damageRegions);
+      const { files: verified, verifySkipped } = await filterVerifiedVehiclePhotos(files, {
+        userMarkedDamage: polygons.length > 0,
+      });
 
       if (!verified.length) {
         showInvalidImageFallback('upload');
         return;
+      }
+
+      if (verifySkipped) {
+        console.info('[estimate-analysis] verify skipped — proceeding with user-marked photos');
       }
 
       const selectedPanels = ((window as any).__leadSelectedPanels as PanelType[] | undefined) || [];
@@ -351,8 +377,6 @@ const EstimateAnalysis: React.FC = () => {
       const panels = selectedPanels.length ? selectedPanels
         : panelResult.panels.length ? panelResult.panels
         : [PanelType.Doors];
-
-      const polygons = userPolygons ?? allRegionsToPolygons(damageRegions);
 
       const analysis = await analyzeDents(
         verified,
@@ -438,8 +462,15 @@ const EstimateAnalysis: React.FC = () => {
       const resolvedCat = Number((analysis as any).ai_triage?.dent_category || 0);
       const dentType = String((analysis as any).ai_triage?.dent_type || '').toLowerCase();
       const damageCategory =
-        resolvedCat >= 6 || /bodyline|crease|collapsed/.test(dentType) ? 'Major Crease / Bodyline Damage'
-        : resolvedCat >= 4 ? 'Moderate to Major Dent'
+        resolvedCat === 1 ? 'Small Dent (Category 1)'
+        : resolvedCat === 2 ? 'Medium Dent (Category 2)'
+        : resolvedCat === 3 ? 'Moderate Dent (Category 3)'
+        : resolvedCat === 4 ? 'Large Dent (Category 4)'
+        : resolvedCat === 5 ? 'Major Crease / Deep Dent (Category 5)'
+        : resolvedCat === 6 ? 'Severe Crease / Panel Damage (Category 6)'
+        : resolvedCat === 7 ? 'Extreme Damage (Category 7)'
+        : /bodyline|crease|collapsed/.test(dentType) ? 'Major Crease / Bodyline Damage'
+        : resolvedCat >= 5 ? 'Moderate to Major Dent'
         : dentCount <= 2 ? 'Minor Dent'
         : dentCount <= 5 ? 'Moderate Dent'
         : 'Multiple Dents';
@@ -447,13 +478,17 @@ const EstimateAnalysis: React.FC = () => {
         ? topPanel.panel_name.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())
         : 'Vehicle Panel';
       const repairTime =
-        resolvedCat >= 6 ? '3–5 hours'
+        resolvedCat >= 7 ? '4–6 hours'
+        : resolvedCat >= 6 ? '3–5 hours'
         : resolvedCat >= 4 ? '2–4 hours'
         : dentCount <= 2 ? '1–2 hours'
         : dentCount <= 5 ? '1–3 hours'
         : '3–5 hours';
       const isHail = detectHailDamage(analysis);
-      const hasPaintDamage = !!(analysis.flags?.pdr_incompatible) || analysis.summary.total_scratches > 0;
+      const hasPaintDamage = !!analysis.flags?.pdr_incompatible;
+      const paintRepairNeeded = !!(analysis.flags as any)?.paint_repair_needed;
+      const paintMarksNoted = !!(analysis.flags as any)?.paint_marks_noted ||
+        (analysis.summary.total_scratches > 0 && !hasPaintDamage && !paintRepairNeeded);
 
       // SINGLE SOURCE OF TRUTH: prices come from the edge function, which uses
       // the canonical category table (supabase/functions/_shared/pricing.ts).
@@ -491,10 +526,14 @@ const EstimateAnalysis: React.FC = () => {
         damageType: isHail ? 'hail' : hasPaintDamage ? 'paint' : 'pdr',
         estimateMin: estMin,
         estimateMax: estMax,
+        pdrEstimateMin: estMin,
+        pdrEstimateMax: estMax,
         confidence: analysis.summary.confidence_overall,
         dents: dentCount,
         scratches: analysis.summary.total_scratches,
         hasPaintDamage,
+        paintRepairNeeded,
+        paintMarksNoted,
         pdrSuitable: !hasPaintDamage,
         inspectionRequired: needsInspection,
         damageCategory,
@@ -526,42 +565,20 @@ const EstimateAnalysis: React.FC = () => {
     }
   };
 
-  const animateShops = (min: number, max: number) => {
-    // No valid price (paint/fallback/inspection) → shops stay in "Preparing
-    // quote..." state; the results page routes to the proper scenario screen.
-    if (!(min > 0 && max > 0)) return;
-    const mid = Math.round((min + max) / 2);
-    const prices = [`$${mid - 25}–$${mid + 25}`, `$${mid - 40}–$${mid + 10}`, `$${mid - 15}–$${mid + 45}`];
-
+  const animateShops = (_min: number, _max: number) => {
     setShops((prev) =>
       prev.map((shop, i) => ({
         ...shop,
         status: i === 0 ? 'analyzing' : 'waiting',
-        price: undefined,
+        ago: 'just now',
       }))
     );
 
-    [0, 1, 2].forEach((idx) => {
-      window.setTimeout(() => {
-        setShops((prev) =>
-          prev.map((shop, i) => {
-            if (i === idx) {
-              return { ...shop, status: 'responded', price: prices[idx], ago: 'just now' };
-            }
-
-            if (i === idx + 1 && i < prev.length) {
-              return { ...shop, status: 'analyzing' };
-            }
-
-            return shop;
-          })
-        );
-      }, 800 + idx * 1100);
-    });
-
     window.setTimeout(() => {
-      setShops((prev) => prev.map((shop, i) => (i >= 3 ? { ...shop, status: 'analyzing' } : shop)));
-    }, 4300);
+      setShops((prev) =>
+        prev.map((shop, i) => (i === 0 ? { ...shop, status: 'analyzing', ago: 'just now' } : shop))
+      );
+    }, 1200);
   };
 
   const totalMarkedRegions = damageRegions.reduce((sum, arr) => sum + arr.length, 0);
@@ -668,7 +685,7 @@ const EstimateAnalysis: React.FC = () => {
     );
   };
 
-  const handleAdvance = () => {
+  const handleAdvance = async () => {
     if (!isContactValid) return;
     const current = sessionStorage.getItem('estimateData');
     if (current && analysisInfo) {
@@ -676,6 +693,7 @@ const EstimateAnalysis: React.FC = () => {
         const parsed = JSON.parse(current);
         const markerCount = damageRegions.reduce((sum, group) => sum + group.length, 0)
           || markers.reduce((sum, group) => sum + group.length, 0);
+        const photoCount = ((window as any).__leadUploadFiles as File[] | undefined)?.length || 0;
         const next = {
           ...parsed,
           location: analysisInfo.panelName,
@@ -697,7 +715,42 @@ const EstimateAnalysis: React.FC = () => {
           },
         };
         sessionStorage.setItem('estimateData', JSON.stringify(next));
-      } catch {
+
+        setDispatchError(null);
+        const photoFiles = ((window as any).__leadUploadFiles as File[] | undefined) || [];
+        const result = await dispatchLeadToBodyshops({
+          customerName: customerName.trim(),
+          customerEmail: customerEmail.trim(),
+          customerComment: customerComment.trim(),
+          zip: parsed.zip || (window as any).__leadZipCode || '',
+          damageCategory: parsed.damageCategory,
+          location: analysisInfo.panelName,
+          dentCount: markerCount,
+          estimateMin: parsed.estimateMin,
+          estimateMax: parsed.estimateMax,
+          pdrEstimateMin: parsed.pdrEstimateMin ?? parsed.estimateMin,
+          pdrEstimateMax: parsed.pdrEstimateMax ?? parsed.estimateMax,
+          paintRepairNeeded: parsed.paintRepairNeeded,
+          photoCount,
+          photoFiles,
+        });
+
+        if (result.ok && result.leadId) {
+          sessionStorage.setItem('dispatchedLeadId', result.leadId);
+          if (result.bodyshopId) {
+            sessionStorage.setItem('dispatchedBodyshopId', result.bodyshopId);
+          }
+          next.leadId = result.leadId;
+          if (result.bodyshopId) next.bodyshopId = result.bodyshopId;
+          sessionStorage.setItem('estimateData', JSON.stringify(next));
+        }
+
+        if (!result.ok) {
+          console.error('[estimate-analysis] lead dispatch failed', result.error);
+          setDispatchError(result.error || 'Could not send your request to the shop.');
+        }
+      } catch (err) {
+        console.error('[estimate-analysis] handleAdvance error', err);
       }
     }
     setStage(4);
@@ -848,8 +901,20 @@ const EstimateAnalysis: React.FC = () => {
             <p className="text-xs font-black uppercase tracking-[0.14em] text-[#4f46e5] mb-2">Step 1 — Mark your damage</p>
             <h1 className="text-2xl md:text-3xl font-extrabold text-[#111827]">Drag around each dent before we analyze</h1>
             <p className="text-sm text-[#5f6b7b] mt-2 max-w-xl mx-auto">
-              Draw an ellipse around every damaged area. A nearby shop will review your photos and confirm the estimate.
+              Draw a <strong className="text-[#374151]">small tight circle</strong> on each ding — not the whole glare area. Shops review before pricing.
             </p>
+          </div>
+
+          <div className="mb-4 rounded-2xl border border-[#dbe4ff] bg-[#f8faff] px-4 py-3 max-w-2xl mx-auto">
+            <p className="text-[11px] font-bold text-[#4f46e5] uppercase tracking-wide mb-2">Small dent? Mark it tight</p>
+            <ul className="space-y-1">
+              {PHOTO_CAPTURE_TIPS.slice(2, 5).map((tip) => (
+                <li key={tip} className="text-[11px] text-[#4b5563] leading-snug flex gap-1.5">
+                  <span className="text-[#4f46e5] flex-shrink-0">•</span>
+                  {tip}
+                </li>
+              ))}
+            </ul>
           </div>
 
           <div className="bg-white rounded-[26px] border border-[#e8ebf3] p-4 md:p-6 shadow-sm">
@@ -1009,8 +1074,8 @@ const EstimateAnalysis: React.FC = () => {
     const minutes = Math.floor(dispatchSecondsLeft / 60);
     const seconds = String(dispatchSecondsLeft % 60).padStart(2, '0');
     const completion = Math.round(progress);
-    const quotesReceived = Math.min(3, Math.floor(elapsed / 55));
-    const currentlyReviewing = Math.max(3, 10 - quotesReceived);
+    const shopCount = shops.length;
+    const primaryShop = shops[0]?.name || DEMO_BODYSHOP_NAME;
     const summaryDamage = bottomData?.damageCategory ?? 'Minor Dent';
     const summaryLocation = bottomData?.location ?? 'Front Right Door';
     const summaryMethod = analysisInfo?.damageType?.includes('Hail') ? 'Hail Dent Repair' : 'PDR (Paintless Dent Repair)';
@@ -1021,23 +1086,12 @@ const EstimateAnalysis: React.FC = () => {
       { label: 'Shops reviewing your damage', checkpoint: 100 },
       { label: 'Preparing your final estimate page', checkpoint: 150 },
     ];
-    const liveFeed = [
-      { initials: 'PDR', name: 'PDR Pro Studio', action: 'viewed your request', ago: '2s ago' },
-      { initials: 'DM', name: 'Dent Masters LA', action: 'is reviewing your photos', ago: '12s ago' },
-      { initials: 'QDR', name: 'Quick Dent Repair', action: 'requested estimate details', ago: '27s ago' },
-      { initials: 'PD', name: 'Precision Dentistry', action: 'has started preparing a quote', ago: '35s ago' },
-    ];
-    const radialNodes = [
-      { top: '14%', left: '23%', type: 'logo', label: 'PDR', tone: 'dark' },
-      { top: '14%', left: '50%', type: 'shop' },
-      { top: '14%', left: '77%', type: 'logo', label: 'DM', tone: 'light' },
-      { top: '38%', left: '88%', type: 'logo', label: 'PD', tone: 'teal' },
-      { top: '62%', left: '88%', type: 'shop' },
-      { top: '86%', left: '67%', type: 'logo', label: 'RISE', tone: 'light' },
-      { top: '86%', left: '33%', type: 'shop' },
-      { top: '62%', left: '12%', type: 'logo', label: 'QDR', tone: 'dark' },
-      { top: '38%', left: '12%', type: 'shop' },
-    ] as const;
+    const liveFeed = shops.slice(0, 3).map((shop, i) => ({
+      initials: shop.initials,
+      name: shop.name,
+      action: shop.status === 'analyzing' ? 'is reviewing your photos' : 'received your request',
+      ago: i === 0 ? 'just now' : `${12 + i * 15}s ago`,
+    }));
     const phase =
       elapsed < 45
         ? 'Uploading your photos to nearby bodyshops'
@@ -1055,8 +1109,11 @@ const EstimateAnalysis: React.FC = () => {
           <div className="bg-white rounded-[26px] border border-[#e8ebf3] p-4 md:p-5 shadow-sm">
             <div className="text-center mb-4">
               <p className="text-xs font-black uppercase tracking-[0.14em] text-[#4f46e5] mb-1">Sending request to shops</p>
-              <h1 className="text-2xl md:text-[42px] md:leading-[1.05] font-extrabold text-[#101828]">Nearby bodyshops are reviewing your damage</h1>
-              <p className="text-sm text-[#6b7280] mt-1.5">This can take up to 3 minutes while we send your photos and receive live quotes.</p>
+              <h1 className="text-2xl md:text-[42px] md:leading-[1.05] font-extrabold text-[#101828]">Your request was sent to {primaryShop}</h1>
+              <p className="text-sm text-[#6b7280] mt-1.5">The shop has 5 minutes to review your photos and prepare a quote.</p>
+              {dispatchError && (
+                <p className="text-sm text-red-600 mt-2 font-medium">{dispatchError}</p>
+              )}
             </div>
 
             <div className="grid grid-cols-1 lg:grid-cols-[1.35fr_0.95fr_0.95fr] gap-3.5">
@@ -1121,51 +1178,19 @@ const EstimateAnalysis: React.FC = () => {
               </div>
 
               <div className="bg-[#f7f8fc] border border-[#e9ecf4] rounded-2xl p-4">
-                <p className="text-[13px] font-bold text-[#111827] mb-3">Finding the best match for you</p>
+                <p className="text-[13px] font-bold text-[#111827] mb-3">Connected shop on Sunshine Coast</p>
                 <div className="relative h-[250px] rounded-xl bg-[#f4f6ff] border border-[#e7e9f6] flex items-center justify-center overflow-hidden">
                   <svg className="absolute inset-0 w-full h-full" viewBox="0 0 260 260" fill="none">
-                    {[
-                      [130, 130, 130, 26], [130, 130, 202, 53], [130, 130, 233, 94], [130, 130, 233, 165],
-                      [130, 130, 202, 207], [130, 130, 130, 234], [130, 130, 58, 207], [130, 130, 27, 165], [130, 130, 27, 94], [130, 130, 58, 53],
-                    ].map((line, i) => (
-                      <line key={i} x1={line[0]} y1={line[1]} x2={line[2]} y2={line[3]} stroke="#d7dcf4" strokeWidth="1.4" strokeDasharray="4 4" strokeLinecap="round" />
-                    ))}
                     <circle cx="130" cy="130" r="76" fill="#eceeff" />
                     <circle cx="130" cy="130" r="50" fill="#e4e8ff" />
                   </svg>
 
-                  {radialNodes.map((node, i) => {
-                    return (
-                      <div
-                        key={`${node.type === 'logo' ? node.label : node.type}-${i}`}
-                        className="absolute w-14 h-14 rounded-full bg-[#eef1f7] border border-[#e5e8f2] shadow-[inset_0_1px_0_#ffffff]"
-                        style={{ top: node.top, left: node.left, transform: 'translate(-50%, -50%)' }}
-                      >
-                        <div className="relative w-full h-full flex items-center justify-center">
-                          {node.type === 'shop' ? (
-                            <span className="w-9 h-9 rounded-full bg-white border border-[#e1e5f2] shadow-sm flex items-center justify-center">
-                              <svg className="w-4.5 h-4.5 text-[#635bff]" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8} d="M3 9l1.5-4.5A2 2 0 016.4 3h11.2a2 2 0 011.9 1.5L21 9m-18 0h18m-1 0v8a2 2 0 01-2 2H6a2 2 0 01-2-2V9m5 5h6" />
-                              </svg>
-                            </span>
-                          ) : (
-                            <span
-                              className={`relative w-9 h-9 rounded-full flex items-center justify-center text-[10px] font-black ${
-                                node.tone === 'dark'
-                                  ? 'bg-[#0f172a] text-white'
-                                  : node.tone === 'teal'
-                                    ? 'bg-[#0ea5b7] text-[#062f35]'
-                                    : 'bg-white text-[#111827] border border-[#d8dbe8]'
-                              }`}
-                            >
-                              {node.label}
-                              <span className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-[#22c55e] border border-white" />
-                            </span>
-                          )}
-                        </div>
-                      </div>
-                    );
-                  })}
+                  <div
+                    className="absolute w-16 h-16 rounded-full bg-white border border-[#e1e5f2] shadow-sm flex items-center justify-center text-[11px] font-black text-[#4f46e5]"
+                    style={{ top: '22%', left: '50%', transform: 'translate(-50%, -50%)' }}
+                  >
+                    {shops[0]?.initials || 'PDR'}
+                  </div>
 
                   <div className="relative z-20 w-16 h-16 rounded-full bg-gradient-to-br from-[#5b5dfd] to-[#4f46e5] shadow-[0_0_30px_rgba(79,70,229,0.45)] flex items-center justify-center person-core">
                     <span className="absolute inset-0 rounded-full bg-[#5b5dfd]/30 animate-ping" style={{ animationDuration: '1.6s' }} />
@@ -1185,16 +1210,16 @@ const EstimateAnalysis: React.FC = () => {
 
                 <div className="grid grid-cols-3 gap-2 mt-3 text-center">
                   <div>
-                    <p className="text-3xl leading-none font-extrabold text-[#4f46e5]">12</p>
-                    <p className="text-[10px] text-[#8b93a7] mt-1">Bodyshops Connected</p>
+                    <p className="text-3xl leading-none font-extrabold text-[#4f46e5]">{shopCount}</p>
+                    <p className="text-[10px] text-[#8b93a7] mt-1">Shop{shopCount === 1 ? '' : 's'} Connected</p>
                   </div>
                   <div>
-                    <p className="text-3xl leading-none font-extrabold text-[#4f46e5]">{currentlyReviewing}</p>
-                    <p className="text-[10px] text-[#8b93a7] mt-1">Currently Reviewing</p>
+                    <p className="text-3xl leading-none font-extrabold text-[#4f46e5]">{shops.filter((s) => s.status !== 'waiting').length}</p>
+                    <p className="text-[10px] text-[#8b93a7] mt-1">Reviewing</p>
                   </div>
                   <div>
-                    <p className="text-3xl leading-none font-extrabold text-[#4f46e5]">{quotesReceived}</p>
-                    <p className="text-[10px] text-[#8b93a7] mt-1">Quotes Received</p>
+                    <p className="text-3xl leading-none font-extrabold text-[#4f46e5]">5m</p>
+                    <p className="text-[10px] text-[#8b93a7] mt-1">Response SLA</p>
                   </div>
                 </div>
               </div>
@@ -1640,7 +1665,7 @@ const EstimateAnalysis: React.FC = () => {
                 </div>
               ))}
               <p className="text-center text-[11px] text-[#9ca3af] pt-1">
-                {shops.filter((s) => s.status === 'responded').length} responding now • 7 more shops connected…
+                {shops.filter((s) => s.status === 'analyzing' || s.status === 'reviewing').length} shop reviewing your request
               </p>
             </div>
 

@@ -126,9 +126,9 @@ const LeadsGenerator: React.FC = () => {
         frames.length - 1,
       ].filter((i) => i >= 0 && i < frames.length))];
       const sampleFrames = sampleIndices.map((i) => frames[i]);
-      const { accepted, rejected } = await validateVehiclePhotos(sampleFrames);
+      const { rejected, verifySkipped } = await validateVehiclePhotos(sampleFrames);
 
-      if (rejected || accepted.length < sampleFrames.length) {
+      if (rejected && !verifySkipped) {
         sessionStorage.removeItem('estimateData');
         sessionStorage.removeItem('liveScanDispatchMode');
         sessionStorage.removeItem('liveScanFullAnalysis');

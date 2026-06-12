@@ -38,6 +38,7 @@ export const parsePartnerRoute = (rawRoute: string): ParsedPartnerRoute => {
     next === 'leads' ||
     next === 'quoted' ||
     next === 'booked' ||
+    next === 'complete' ||
     next === 'performance' ||
     next === 'notifications' ||
     next === 'settings'
@@ -72,6 +73,15 @@ export const formatClock = (iso: string) => {
 };
 
 export const ratioPercent = (value: number) => `${Math.round(value * 100)}%`;
+
+/** First day of the month after completion — when platform fee is invoiced */
+export const formatInvoiceDueDate = (completedAt?: string) => {
+  const base = completedAt ? new Date(completedAt) : new Date();
+  const due = new Date(base.getFullYear(), base.getMonth() + 1, 1);
+  return due.toLocaleDateString('en-AU', { day: 'numeric', month: 'short', year: 'numeric' });
+};
+
+export const nextMonthlyInvoiceDate = () => formatInvoiceDueDate(new Date().toISOString());
 
 export const getLeadTimeLeft = (deadlineAt: string) => {
   const seconds = Math.max(0, Math.floor((new Date(deadlineAt).getTime() - Date.now()) / 1000));

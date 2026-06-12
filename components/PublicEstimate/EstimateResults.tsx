@@ -8,6 +8,9 @@ interface EstimateData {
   damageType: string;
   estimateMin: number;
   estimateMax: number;
+  /** Dent (PDR) portion — same as estimateMin/Max until shop adds paint */
+  pdrEstimateMin?: number;
+  pdrEstimateMax?: number;
   confidence: number;
   dents: number;
   scratches: number;
@@ -16,6 +19,8 @@ interface EstimateData {
   repairTime: string;
   zip: string;
   hasPaintDamage?: boolean;
+  paintRepairNeeded?: boolean;
+  paintMarksNoted?: boolean;
   isDemo?: boolean;
   fallbackScenario?: FallbackScenario;
   responsesCount?: number;
@@ -50,6 +55,7 @@ interface EstimateData {
 type FallbackScenario = 'no-responses' | 'not-suitable-pdr' | 'inspection-required';
 
 interface ShopOffer {
+  id?: string;
   name: string;
   initials: string;
   rating: number;
@@ -61,14 +67,23 @@ interface ShopOffer {
   isBest?: boolean;
 }
 
-const buildShops = (min: number, max: number): ShopOffer[] => {
+import { fetchActiveBodyshops, DEMO_BODYSHOP_ID } from '../../services/leadDispatchService';
+
+const buildShops = (
+  min: number,
+  max: number,
+  primaryShopName = 'Sunshine Coast PDR Co.',
+  primaryShopId?: string,
+): ShopOffer[] => {
   const mid = Math.round((min + max) / 2) || 275;
+  const initials = primaryShopName
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((w) => w[0]?.toUpperCase() || '')
+    .join('') || 'SC';
   return [
-    { name: 'PDR Pro Studio',       initials: 'PDR', rating: 4.9, reviews: 328, distance: '0.4 mi', price: mid,      priceRange: `$${mid - 25}–$${mid + 25}`,  time: '1–2 hours', isBest: true },
-    { name: 'Dent Masters LA',      initials: 'DM',  rating: 4.8, reviews: 210, distance: '1.2 mi', price: mid + 20, priceRange: `$${mid - 5}–$${mid + 45}`,   time: '1–3 hours' },
-    { name: 'Quick Dent Repair',    initials: 'QD',  rating: 4.6, reviews: 154, distance: '1.8 mi', price: mid + 35, priceRange: `$${mid + 10}–$${mid + 60}`,  time: '1–3 hours' },
-    { name: 'Elite PDR',            initials: 'EP',  rating: 4.7, reviews: 98,  distance: '2.1 mi', price: mid + 45, priceRange: `$${mid + 20}–$${mid + 70}`,  time: '2–3 hours' },
-    { name: 'Prime Dent Solutions', initials: 'PS',  rating: 4.7, reviews: 122, distance: '2.7 mi', price: mid + 50, priceRange: `$${mid + 25}–$${mid + 75}`,  time: '1–3 hours' },
+    { id: primaryShopId, name: primaryShopName, initials, rating: 4.9, reviews: 86, distance: '2.1 km', price: mid, priceRange: `$${min}–$${max}`, time: '2–4 hours', isBest: true },
   ];
 };
 
@@ -85,8 +100,8 @@ const buildFallbackData = (): EstimateData => ({
   zip: '',
 });
 
-const TOTAL_SHOPS = 24;
-const RESPONDED = 5;
+const TOTAL_SHOPS = 1;
+const RESPONDED = 1;
 
 const prettyPanelName = (value?: string): string => {
   if (!value) return 'Panel';
@@ -156,10 +171,13 @@ const EstimateResults: React.FC = () => {
     if (raw) {
       const parsed: EstimateData = JSON.parse(raw);
       setData(parsed);
-      // HONESTY RULE: never invent a price. Shops are only built from a real
-      // estimate; missing/zero price routes to the inspection scenario.
       const hasRealPrice = (parsed.estimateMin ?? 0) > 0 && (parsed.estimateMax ?? 0) > 0;
-      setShops(hasRealPrice ? buildShops(parsed.estimateMin, parsed.estimateMax) : []);
+      void fetchActiveBodyshops().then((active) => {
+        const shop = active[0];
+        setShops(hasRealPrice
+          ? buildShops(parsed.estimateMin, parsed.estimateMax, shop?.business_name, shop?.id || DEMO_BODYSHOP_ID)
+          : []);
+      });
       const resolvedScenario: FallbackScenario | null = forcedByHash
         ? forcedByHash
         : isFallbackScenario(forcedBySession)
@@ -214,7 +232,9 @@ const EstimateResults: React.FC = () => {
   const best = shops[0];
   const lowestPrice  = shops[0]?.price ?? 0;
   const highestPrice = shops[shops.length - 1]?.price ?? 0;
-  const aiMid = Math.round((data.estimateMin + data.estimateMax) / 2) || 275;
+  const pdrMin = data.pdrEstimateMin ?? data.estimateMin;
+  const pdrMax = data.pdrEstimateMax ?? data.estimateMax;
+  const aiMid = Math.round((pdrMin + pdrMax) / 2) || Math.round((data.estimateMin + data.estimateMax) / 2) || 275;
 
   // panelBreakdownData (saved from analysis step) is the authoritative source.
   // Fall back to analysis.panels if not present (single-panel flow).
@@ -254,6 +274,7 @@ const EstimateResults: React.FC = () => {
     sessionStorage.setItem(
       'bookingTargetShop',
       JSON.stringify({
+        id: best?.id || DEMO_BODYSHOP_ID,
         name: best?.name || 'Best Match Bodyshop',
         price: best?.price || aiMid,
       })
@@ -587,7 +608,15 @@ const EstimateResults: React.FC = () => {
                     </svg>
                     <p className="text-[11px] text-[#9ca3af]">Damage Type</p>
                     <p className="text-sm font-bold text-[#111827]">{data.damageCategory}</p>
-                    <p className="text-[11px] text-[#9ca3af]">{data.hasPaintDamage ? 'Paint repair likely required' : 'No paint required'}</p>
+                    <p className="text-[11px] text-[#9ca3af]">
+                      {data.hasPaintDamage
+                        ? 'Not suitable for PDR — bodyshop repair'
+                        : data.paintRepairNeeded
+                          ? 'PDR dent — pintura lascada (repintura à parte)'
+                          : data.paintMarksNoted
+                            ? 'PDR dent — minor paint marks noted'
+                            : 'PDR dent — paint intact'}
+                    </p>
                   </div>
                   <div className="text-center">
                     <svg className="w-5 h-5 text-[#9ca3af] mx-auto mb-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -678,9 +707,26 @@ const EstimateResults: React.FC = () => {
                 )}
 
                 <div className="border-t border-[#e5e7eb] pt-4">
+                  {data.paintRepairNeeded ? (
+                    <div className="mb-4 space-y-2 rounded-xl border border-orange-200 bg-orange-50/60 p-3">
+                      <div className="flex items-center justify-between text-sm">
+                        <span className="font-semibold text-[#111827]">PDR (amassado)</span>
+                        <span className="font-bold text-[#111827]">${pdrMin} – ${pdrMax}</span>
+                      </div>
+                      <div className="flex items-center justify-between text-sm text-[#64748b]">
+                        <span>Pintura (lascada)</span>
+                        <span className="font-medium">Orçamento na loja</span>
+                      </div>
+                      <p className="text-[11px] text-orange-800 border-t border-orange-200/80 pt-2">
+                        Total final = PDR + pintura quando a oficina responder (ex.: PDR $435 + Paint $180).
+                      </p>
+                    </div>
+                  ) : null}
                   <div className="flex items-end justify-between">
                     <div>
-                      <p className="text-[11px] text-[#9ca3af] uppercase tracking-wide">Final Price</p>
+                      <p className="text-[11px] text-[#9ca3af] uppercase tracking-wide">
+                        {data.paintRepairNeeded ? 'PDR estimate' : 'Final Price'}
+                      </p>
                       <p className="text-3xl font-extrabold text-[#111827]">${finalMid}</p>
                       <p className="text-[11px] text-[#9ca3af]">Range: ${finalMin} – ${finalMax}</p>
                     </div>
@@ -692,7 +738,34 @@ const EstimateResults: React.FC = () => {
               </div>
             )}
 
-            {/* Paint damage notice */}
+            {/* Pintura lascada — dent estimate still applies */}
+            {data.paintRepairNeeded && !data.hasPaintDamage && (
+              <div className="bg-orange-50 border border-orange-200 rounded-xl p-4 flex items-start gap-3">
+                <span className="text-xl flex-shrink-0">🎨</span>
+                <div>
+                  <p className="text-sm font-bold text-orange-800">Dent (amassado) — pintura lascada noted</p>
+                  <p className="text-xs text-orange-700 mt-1">
+                    The estimate above (<strong>${aiMid}</strong>) covers the <strong>dent repair only</strong> at the classified category.
+                    Chipped or flaked paint requires a <strong>separate touch-up/repaint quote</strong> after bodyshop inspection.
+                  </p>
+                </div>
+              </div>
+            )}
+
+            {/* Minor paint marks — dent estimate still applies */}
+            {data.paintMarksNoted && !data.hasPaintDamage && !data.paintRepairNeeded && (
+              <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 flex items-start gap-3">
+                <span className="text-xl flex-shrink-0">🔧</span>
+                <div>
+                  <p className="text-sm font-bold text-amber-900">Dent repair (PDR) — minor paint marks noted</p>
+                  <p className="text-xs text-amber-800 mt-1">
+                    The estimate above covers the <strong>dent (amassado) only</strong>. Small chips or scuffs may need a separate touch-up quote after inspection — the panel is still classified as a PDR dent.
+                  </p>
+                </div>
+              </div>
+            )}
+
+            {/* Full PDR incompatible */}
             {data.hasPaintDamage && (
               <div className="bg-orange-50 border border-orange-200 rounded-xl p-4 flex items-start gap-3">
                 <span className="text-xl flex-shrink-0">🎨</span>

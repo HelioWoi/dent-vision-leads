@@ -69,6 +69,102 @@ export const parseSizeRangeUpperMm = (range?: string): number => {
   return parseInt(m[2], 10) || 0;
 };
 
+/** Reference panel dimensions (mm) for %→mm conversion when no ruler is visible. */
+export const PANEL_REFERENCE_MM: Readonly<Record<string, { height: number; width: number }>> = {
+  front_door: { height: 850, width: 700 },
+  rear_door: { height: 850, width: 700 },
+  door: { height: 850, width: 700 },
+  bonnet: { height: 600, width: 1400 },
+  boot_lid: { height: 500, width: 1200 },
+  front_quarter_panel: { height: 600, width: 700 },
+  rear_quarter_panel: { height: 600, width: 700 },
+  guard: { height: 600, width: 700 },
+  roof: { height: 400, width: 1400 },
+  front_bumper: { height: 400, width: 1600 },
+  rear_bumper: { height: 400, width: 1600 },
+};
+
+export const normalizePanelKey = (panel?: string): string => {
+  const p = String(panel || '').toLowerCase().replace(/\s+/g, '_');
+  if (/front_door/.test(p)) return 'front_door';
+  if (/rear_door/.test(p)) return 'rear_door';
+  if (/door/.test(p)) return 'door';
+  if (/boot|trunk|tailgate|hatch/.test(p)) return 'boot_lid';
+  if (/bonnet|hood/.test(p)) return 'bonnet';
+  if (/quarter|fender/.test(p)) return /rear/.test(p) ? 'rear_quarter_panel' : 'front_quarter_panel';
+  if (/guard/.test(p)) return 'guard';
+  if (/bumper/.test(p)) return /rear/.test(p) ? 'rear_bumper' : 'front_bumper';
+  if (/roof/.test(p)) return 'roof';
+  return p || 'door';
+};
+
+/** Converts AI panel-height/width % estimates into mm span (uses larger axis). */
+export const damageSpanMmFromPanelPct = (
+  panel?: string,
+  heightPct?: number,
+  widthPct?: number,
+): number => {
+  const ref = PANEL_REFERENCE_MM[normalizePanelKey(panel)] || PANEL_REFERENCE_MM.door;
+  const hMm = (heightPct || 0) > 0 ? (heightPct! / 100) * ref.height : 0;
+  const wMm = (widthPct || 0) > 0 ? (widthPct! / 100) * ref.width : 0;
+  return Math.round(Math.max(hMm, wMm));
+};
+
+export const isDoorPanel = (panel?: string): boolean =>
+  /door/.test(normalizePanelKey(panel));
+
+export const isVerticalDoorCrease = (input: {
+  panelDetected?: string;
+  creaseOrientation?: string;
+  dentType?: string;
+  damageHeightPct?: number;
+  damageWidthPct?: number;
+}): boolean => {
+  if (!isDoorPanel(input.panelDetected)) return false;
+  const orient = String(input.creaseOrientation || '').toLowerCase();
+  if (orient === 'vertical') return true;
+  const h = input.damageHeightPct || 0;
+  const w = input.damageWidthPct || 0;
+  if (h >= 15 && h > w * 1.4) return true;
+  return /crease|bodyline/.test(String(input.dentType || '').toLowerCase()) && h >= 12 && h > w;
+};
+
+/**
+ * Panel-relative category floor — more reliable than AI mm guess for large creases.
+ * Silver door vertical crease (~30–50% door height) → Category 7.
+ */
+export const categoryFromPanelDamage = (input: {
+  panelDetected?: string;
+  damageHeightPct?: number;
+  damageWidthPct?: number;
+  creaseOrientation?: string;
+  dentType?: string;
+  geometryScore?: number;
+  stressScore?: number;
+}): number => {
+  const panel = normalizePanelKey(input.panelDetected);
+  const hPct = input.damageHeightPct || 0;
+  const wPct = input.damageWidthPct || 0;
+  const dentType = String(input.dentType || '').toLowerCase();
+  const isCrease = /crease|bodyline|collapsed/.test(dentType);
+  const verticalDoor = isVerticalDoorCrease(input);
+
+  if (verticalDoor) {
+    // User-calibrated: full-height / major vertical door crease = Cat 7
+    if (hPct >= 28 || (hPct >= 22 && (input.geometryScore || 0) >= 4)) return 7;
+    if (hPct >= 18) return 6;
+    if (hPct >= 12) return 5;
+  }
+
+  if (isDoorPanel(panel) && isCrease && hPct >= 25) {
+    return hPct >= 35 ? 7 : 6;
+  }
+
+  const spanMm = damageSpanMmFromPanelPct(panel, hPct, wPct);
+  if (spanMm > 0) return categoryBySizeMm(spanMm);
+  return 0;
+};
+
 export interface CategorySignals {
   aiCategory?: number;
   sizeMm?: number;
@@ -78,6 +174,10 @@ export interface CategorySignals {
   locationScore?: number;  // 1-5 (4=handle/bodyline, 5=extreme edge)
   dentType?: string;       // crease_dent | bodyline_dent | collapsed_dent | ...
   severity?: string;       // minor | moderate | medium | severe
+  panelDetected?: string;
+  damageHeightPct?: number;
+  damageWidthPct?: number;
+  creaseOrientation?: string;
   triageDamageDetected?: boolean;
   /** @deprecated Ellipse marks location only — never used for pricing floors. */
   userRegionCategory?: number;
@@ -125,48 +225,250 @@ export const resolveCategory = (s: CategorySignals): { category: number; reasons
     reasons.push(`ai_category=${cat}`);
   }
 
+  // Deep/medium ding mislabeled as Cat 1 when scores indicate 31–60mm deformation.
+  if (
+    cat === 1 &&
+    (s.sizeScore || 0) >= 2 &&
+    (s.geometryScore || 0) >= 2
+  ) {
+    cat = 2;
+    reasons.push('deep_ding_scores→floor_cat2');
+  }
+
+  // Visible medium dent mislabeled Cat 1 when location/geometry indicate clear deformation.
+  if (
+    cat === 1 &&
+    (s.locationScore || 0) >= 3 &&
+    (s.geometryScore || 0) >= 2
+  ) {
+    cat = 2;
+    reasons.push('visible_panel_dent→floor_cat2');
+  }
+
+  // Deep/sharp dent mislabeled Cat 2 when scores indicate 61–90mm deformation.
+  if (
+    cat === 2 &&
+    (s.sizeScore || 0) >= 3
+  ) {
+    cat = 3;
+    reasons.push('deep_dent_size_score→floor_cat3');
+  }
+
+  if (
+    cat === 2 &&
+    (s.stressScore || 0) >= 2 &&
+    (s.geometryScore || 0) >= 2 &&
+    (s.locationScore || 0) >= 3
+  ) {
+    cat = 3;
+    reasons.push('deep_sharp_near_bodyline→floor_cat3');
+  }
+
+  if (cat === 2 && (s.locationScore || 0) >= 4) {
+    cat = 3;
+    reasons.push('deep_arch_or_edge→floor_cat3');
+  }
+
+  if (
+    cat === 2 &&
+    (s.locationScore || 0) >= 3 &&
+    (s.sizeScore || 0) >= 2 &&
+    (s.geometryScore || 0) >= 2
+  ) {
+    cat = 3;
+    reasons.push('large_bowl_near_edge→floor_cat3');
+  }
+
+  // Large crease/dent mislabeled Cat 3 when scores indicate 91–160mm deformation.
+  if (
+    cat === 3 &&
+    (s.sizeScore || 0) >= 3 &&
+    (s.stressScore || 0) >= 3 &&
+    (s.geometryScore || 0) >= 3
+  ) {
+    cat = 4;
+    reasons.push('large_crease_scores→floor_cat4');
+  }
+
+  if (
+    cat <= 3 &&
+    (s.sizeScore || 0) >= 3 &&
+    (s.stressScore || 0) >= 4 &&
+    (s.geometryScore || 0) >= 4
+  ) {
+    cat = 4;
+    reasons.push('sharp_long_crease→floor_cat4');
+  }
+
+  // Major crease mislabeled Cat 4 when scores indicate 161–260mm deformation.
+  if (
+    cat === 4 &&
+    (s.sizeScore || 0) >= 4
+  ) {
+    cat = 5;
+    reasons.push('major_crease_size_score→floor_cat5');
+  }
+
+  if (
+    cat <= 4 &&
+    (s.sizeScore || 0) >= 4 &&
+    (s.stressScore || 0) >= 3 &&
+    (s.geometryScore || 0) >= 4
+  ) {
+    cat = 5;
+    reasons.push('major_crease_scores→floor_cat5');
+  }
+
   const dentType = String(s.dentType || '').toLowerCase();
+  const verticalDoorCrease = isVerticalDoorCrease({
+    panelDetected: s.panelDetected,
+    creaseOrientation: s.creaseOrientation,
+    dentType: s.dentType,
+    damageHeightPct: s.damageHeightPct,
+    damageWidthPct: s.damageWidthPct,
+  });
+
+  // Panel-relative sizing — primary guardrail for large vertical door creases (Cat 7).
+  const panelCat = categoryFromPanelDamage({
+    panelDetected: s.panelDetected,
+    damageHeightPct: s.damageHeightPct,
+    damageWidthPct: s.damageWidthPct,
+    creaseOrientation: s.creaseOrientation,
+    dentType: s.dentType,
+    geometryScore: s.geometryScore,
+    stressScore: s.stressScore,
+  });
+  if (panelCat > cat) {
+    cat = panelCat;
+    reasons.push(`panel_pct→floor_cat${panelCat}`);
+  }
+
+  // Hard rule: vertical door crease with clear geometry/stress → never below Cat 7 when tall enough.
+  if (
+    verticalDoorCrease &&
+    (s.damageHeightPct || 0) >= 25 &&
+    ((s.geometryScore || 0) >= 3 || (s.stressScore || 0) >= 3 || /crease|bodyline/.test(dentType))
+  ) {
+    if (cat < 7) {
+      cat = 7;
+      reasons.push('vertical_door_crease→floor_cat7');
+    }
+  }
+
+  if (
+    cat <= 5 &&
+    (s.sizeScore || 0) >= 4 &&
+    (s.stressScore || 0) >= 4 &&
+    (s.geometryScore || 0) >= 5
+  ) {
+    cat = 6;
+    reasons.push('severe_bodyline_collapse→floor_cat6');
+  }
+
+  if (
+    cat === 5 &&
+    /bodyline|collapsed/.test(dentType) &&
+    (s.stressScore || 0) >= 4 &&
+    (s.geometryScore || 0) >= 4
+  ) {
+    cat = 6;
+    reasons.push('complex_bodyline→floor_cat6');
+  }
+
+  if (cat <= 6 && (s.sizeScore || 0) >= 5) {
+    cat = 7;
+    reasons.push('massive_deformation→floor_cat7');
+  }
+
+  if (cat <= 6 && /bumper/.test(dentType) && (s.sizeScore || 0) >= 4) {
+    cat = 7;
+    reasons.push('massive_bumper→floor_cat7');
+  }
+
+  if (
+    cat === 6 &&
+    (s.geometryScore || 0) >= 5 &&
+    (s.stressScore || 0) >= 4
+  ) {
+    cat = 7;
+    reasons.push('full_panel_crease→floor_cat7');
+  }
+
   const isHighRiskType = /bodyline|crease|collapsed|collision/.test(dentType);
   const aiCategorySet = !!(s.aiCategory && s.aiCategory >= 1);
+  const smallLocalized =
+    (s.sizeScore || 0) <= 2 &&
+    (s.stressScore || 0) <= 2 &&
+    (s.geometryScore || 0) <= 2;
 
-  if (s.sizeMm && s.sizeMm > 0) {
-    const bySize = categoryBySizeMm(s.sizeMm);
-    if (bySize > cat && (!aiCategorySet || isHighRiskType)) {
+  // Shallow crease / elongated ding mislabeled as crease_dent — cap at Category 2.
+  // Never cap vertical door creases spanning significant panel height.
+  if (/crease/.test(dentType) && smallLocalized && cat > 2 && !verticalDoorCrease) {
+    cat = 2;
+    reasons.push('small_crease_mislabel→cap_cat2');
+  }
+
+  const panelSpanMm = damageSpanMmFromPanelPct(
+    s.panelDetected,
+    s.damageHeightPct,
+    s.damageWidthPct,
+  );
+  const effectiveSizeMm = Math.max(s.sizeMm || 0, panelSpanMm);
+
+  if (effectiveSizeMm > 0) {
+    const bySize = categoryBySizeMm(effectiveSizeMm);
+    if (bySize > cat) {
       cat = bySize;
-      reasons.push(`size_mm=${s.sizeMm}→cat${bySize}`);
+      reasons.push(`size_mm=${effectiveSizeMm}→cat${bySize}`);
     }
   }
 
   const score = Math.min(5, Math.max(0, Math.round(s.sizeScore || 0)));
   const byScore = SIZE_SCORE_CATEGORY_FLOOR[score] || 0;
-  if (byScore > cat && (!aiCategorySet || isHighRiskType)) {
+  if (byScore > cat) {
     cat = byScore;
     reasons.push(`size_score=${score}→floor_cat${byScore}`);
   }
 
-  // Bodyline/crease guardrails — only when AI explicitly classified as such.
-  if (/bodyline/.test(dentType) && (s.sizeScore || 0) >= 4 && cat < 7) {
-    cat = 7;
-    reasons.push(`bodyline_dent+size_score≥4→floor_cat7`);
-  } else if (/bodyline/.test(dentType) && (s.sizeScore || 0) >= 3 && cat < 5) {
-    cat = 5;
-    reasons.push(`bodyline_dent+size_score≥3→floor_cat5`);
-  } else if (
-    /crease/.test(dentType) &&
-    (s.sizeScore || 0) >= 4 &&
-    (s.stressScore || 0) >= 3 &&
-    cat < 7
-  ) {
-    cat = 7;
-    reasons.push(`crease_dent+large→floor_cat7`);
-  } else if (/crease/.test(dentType) && (s.sizeScore || 0) >= 3 && (s.stressScore || 0) >= 3 && cat < 5) {
-    cat = 5;
-    reasons.push(`crease_dent+moderate→floor_cat5`);
+  // Bodyline/crease guardrails — skip only when AI already placed damage at Cat 6–7.
+  const skipHighRiskFloors = aiCategorySet && s.aiCategory! >= 6;
+
+  if (!skipHighRiskFloors) {
+    if (/bodyline/.test(dentType) && (s.sizeScore || 0) >= 4 && cat < 7) {
+      cat = 7;
+      reasons.push(`bodyline_dent+size_score≥4→floor_cat7`);
+    } else if (/bodyline/.test(dentType) && (s.sizeScore || 0) >= 4 && cat < 5) {
+      cat = 5;
+      reasons.push(`bodyline_dent+size_score≥4→floor_cat5`);
+    } else if (
+      /crease/.test(dentType) &&
+      (s.sizeScore || 0) >= 4 &&
+      (s.stressScore || 0) >= 3 &&
+      cat < 7
+    ) {
+      cat = 7;
+      reasons.push(`crease_dent+large→floor_cat7`);
+    } else if (/crease/.test(dentType) && (s.sizeScore || 0) >= 4 && (s.stressScore || 0) >= 3 && cat < 5) {
+      cat = 5;
+      reasons.push(`crease_dent+moderate→floor_cat5`);
+    }
   }
 
   if (/collapsed|collision/.test(dentType) && cat < 6) {
     cat = 6;
     reasons.push(`dent_type=${dentType}→floor_cat6`);
+  }
+
+  // Fallback when AI omits panel % but scores/type indicate major vertical door crease.
+  if (
+    isDoorPanel(s.panelDetected) &&
+    /crease|bodyline/.test(dentType) &&
+    (s.geometryScore || 0) >= 4 &&
+    (s.stressScore || 0) >= 3 &&
+    cat < 7
+  ) {
+    cat = 7;
+    reasons.push('door_crease_scores→floor_cat7');
   }
 
   return { category: clampCategory(cat || 1), reasons };

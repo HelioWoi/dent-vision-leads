@@ -1,4 +1,6 @@
 import { supabase } from './supabaseClient';
+import { DEMO_BODYSHOP_ID } from './leadDispatchService';
+import { verifyLeadAssignment } from './leadAssignmentService';
 
 export interface BookingSubmissionInput {
   customerName: string;
@@ -15,8 +17,14 @@ export interface BookingSubmissionInput {
   dents?: number;
   estimateMin?: number;
   estimateMax?: number;
+  pdrEstimateMin?: number;
+  pdrEstimateMax?: number;
+  paintRepairNeeded?: boolean;
   targetShopName?: string;
   targetShopPrice?: number;
+  /** Existing lead from estimate dispatch — preferred path */
+  existingLeadId?: string;
+  targetBodyshopId?: string;
 }
 
 export interface BookingSubmissionResult {
@@ -51,62 +59,86 @@ const pickTargetShop = async (targetShopName?: string) => {
 export const submitBookingRequest = async (input: BookingSubmissionInput): Promise<BookingSubmissionResult> => {
   try {
     const targetShop = await pickTargetShop(input.targetShopName);
+    const bodyshopId = input.targetBodyshopId || targetShop?.id || DEMO_BODYSHOP_ID;
+    const shopPrice = Number(input.targetShopPrice || input.estimateMin || 0);
+    const note = [
+      input.note?.trim() ? `Customer note: ${input.note.trim()}` : '',
+    ].filter(Boolean).join(' ');
 
-    const leadPayload = {
-      customer_name: input.customerName,
-      customer_email: input.customerEmail,
-      customer_phone: input.customerPhone,
-      postal_code: input.postalCode || input.zip || null,
-      region: targetShop?.region || 'Unknown Region',
-      ai_damage_category: input.damageCategory || 'Dent Repair',
-      damage_location: input.location || 'Panel pending',
-      dent_count: Number(input.dents || 1),
-      ai_estimate_min: Number(input.estimateMin || 0),
-      ai_estimate_max: Number(input.estimateMax || 0),
-      status: 'booked',
-      created_at: new Date().toISOString(),
-    };
+    if (input.existingLeadId) {
+      const assignment = await verifyLeadAssignment(input.existingLeadId, bodyshopId);
 
-    const { data: leadRow, error: leadError } = await supabase
-      .from('lead_requests' as any)
-      .insert(leadPayload)
-      .select('id')
-      .single();
+      if (!assignment.assigned) {
+        return {
+          ok: false,
+          error: 'This booking is not linked to the selected bodyshop. Please restart from your quote.',
+        };
+      }
 
-    if (leadError || !leadRow?.id) {
-      return {
-        ok: false,
-        error: leadError?.message || 'Could not create booking request.',
-      };
+      if (!assignment.canBook) {
+        return {
+          ok: false,
+          error: assignment.matchStatus === 'booked'
+            ? 'This job is already booked.'
+            : 'The bodyshop must send a quote before you can book. Please wait for their response.',
+        };
+      }
+
+      const { data: matchId, error } = await supabase.rpc('book_existing_lead' as any, {
+        p_lead_id: input.existingLeadId,
+        p_bodyshop_id: bodyshopId,
+        p_customer_phone: input.customerPhone,
+        p_vehicle_rego: input.rego || null,
+        p_preferred_date: input.preferredDate || null,
+        p_preferred_time: input.preferredTime || null,
+        p_customer_note: note || null,
+        p_shop_price: shopPrice || null,
+      });
+
+      if (error) {
+        return { ok: false, error: error.message || 'Could not confirm booking on existing lead.' };
+      }
+
+      return { ok: true, leadId: input.existingLeadId, matchId: matchId ? String(matchId) : undefined } as BookingSubmissionResult;
     }
 
-    if (targetShop?.id) {
-      const preferredSlot = [input.preferredDate, input.preferredTime].filter(Boolean).join(' ');
-      const note = [
-        `Customer requested booking${preferredSlot ? ` for ${preferredSlot}` : ''}.`,
-        input.rego?.trim() ? `Vehicle REGO: ${input.rego.trim()}` : '',
-        input.note?.trim() ? `Customer note: ${input.note.trim()}` : '',
-      ]
-        .filter(Boolean)
-        .join(' ');
+    const { data: leadId, error: leadError } = await supabase.rpc('create_public_lead' as any, {
+      p_customer_name: input.customerName,
+      p_customer_email: input.customerEmail,
+      p_postal_code: input.postalCode || input.zip || null,
+      p_region: targetShop?.region || 'Sunshine Coast, QLD',
+      p_ai_damage_category: input.damageCategory || 'Dent Repair',
+      p_damage_location: input.location || 'Panel pending',
+      p_dent_count: Number(input.dents || 1),
+      p_ai_estimate_min: Number(input.pdrEstimateMin ?? (input.estimateMin || 0)),
+      p_ai_estimate_max: Number(input.pdrEstimateMax ?? (input.estimateMax || 0)),
+      p_ai_pdr_estimate_min: Number(input.pdrEstimateMin ?? (input.estimateMin || 0)),
+      p_ai_pdr_estimate_max: Number(input.pdrEstimateMax ?? (input.estimateMax || 0)),
+      p_paint_repair_needed: !!input.paintRepairNeeded,
+      p_customer_comment: input.note || null,
+    });
 
-      const matchPayload = {
-        bodyshop_id: String(targetShop.id),
-        lead_id: String(leadRow.id),
-        status: 'booked',
-        shop_price_min: Number(input.targetShopPrice || input.estimateMin || 0),
-        shop_price_max: Number(input.targetShopPrice || input.estimateMax || input.estimateMin || 0),
-        shop_note: note,
-        responded_at: new Date().toISOString(),
-      };
-
-      await supabase.from('shop_lead_matches' as any).insert(matchPayload);
+    if (leadError || !leadId) {
+      return { ok: false, error: leadError?.message || 'Could not create booking request.' };
     }
 
-    return {
-      ok: true,
-      leadId: String(leadRow.id),
-    };
+    const leadIdStr = String(leadId);
+    const { error: bookError } = await supabase.rpc('book_existing_lead' as any, {
+      p_lead_id: leadIdStr,
+      p_bodyshop_id: bodyshopId,
+      p_customer_phone: input.customerPhone,
+      p_vehicle_rego: input.rego || null,
+      p_preferred_date: input.preferredDate || null,
+      p_preferred_time: input.preferredTime || null,
+      p_customer_note: note || null,
+      p_shop_price: shopPrice || null,
+    });
+
+    if (bookError) {
+      return { ok: false, leadId: leadIdStr, error: bookError.message };
+    }
+
+    return { ok: true, leadId: leadIdStr };
   } catch (error) {
     return {
       ok: false,

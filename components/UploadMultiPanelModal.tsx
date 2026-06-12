@@ -5,6 +5,7 @@ import {
   PHOTO_SLOT_HINTS,
   PanelPhotoGroup,
 } from '../utils/panelPhotoUpload';
+import { PHOTO_CAPTURE_TIPS } from '../utils/photoCaptureTips';
 
 const PANEL_META: Record<PanelType, { label: string; sublabel: string }> = {
   [PanelType.Bonnet]:   { label: 'Bonnet',     sublabel: 'Front hood' },
@@ -78,6 +79,18 @@ const UploadMultiPanelModal: React.FC<Props> = ({ panels, onConfirm, onBack, onC
           <p className="text-sm text-gray-500 mt-1">
             Up to 3 angles per panel — AI picks the clearest photo for analysis
           </p>
+        </div>
+
+        <div className="mb-4 rounded-2xl border border-[#dbe4ff] bg-[#f8faff] p-3">
+          <p className="text-[11px] font-bold text-[#4f46e5] uppercase tracking-wide mb-2">Tips for small dents</p>
+          <ul className="space-y-1">
+            {PHOTO_CAPTURE_TIPS.slice(0, 3).map((tip) => (
+              <li key={tip} className="text-[11px] text-[#4b5563] leading-snug flex gap-1.5">
+                <span className="text-[#4f46e5] flex-shrink-0">•</span>
+                {tip}
+              </li>
+            ))}
+          </ul>
         </div>
 
         <div className="space-y-4 mb-5">
