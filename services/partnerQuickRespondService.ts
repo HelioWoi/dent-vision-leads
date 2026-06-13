@@ -4,11 +4,19 @@ export interface PartnerQuickLeadContext {
   valid: boolean;
   expired?: boolean;
   token?: string;
+  canRespond?: boolean;
   alreadyResponded?: boolean;
   matchStatus?: string;
   responseDeadline?: string;
   bodyshopName?: string;
   bodyshopRegion?: string;
+  existingQuote?: {
+    quote_min?: number;
+    quote_max?: number;
+    quote_pdr?: number;
+    quote_paint?: number;
+    shop_note?: string;
+  };
   lead?: {
     id: string;
     customer_name?: string;
@@ -18,6 +26,8 @@ export interface PartnerQuickLeadContext {
     dent_count?: number;
     ai_estimate_min?: number;
     ai_estimate_max?: number;
+    ai_pdr_estimate_min?: number;
+    ai_pdr_estimate_max?: number;
     paint_repair_needed?: boolean;
     customer_comment?: string;
     photo_urls?: string[] | null;
@@ -41,11 +51,15 @@ export const getPartnerLeadByToken = async (token: string): Promise<PartnerQuick
     valid: !!row.valid,
     expired: !!row.expired,
     token: row.token ? String(row.token) : token,
+    canRespond: row.can_respond !== undefined
+      ? !!row.can_respond
+      : !['declined', 'booked', 'completed'].includes(String(row.match_status || '')),
     alreadyResponded: !!row.already_responded,
     matchStatus: row.match_status ? String(row.match_status) : undefined,
     responseDeadline: row.response_deadline ? String(row.response_deadline) : undefined,
     bodyshopName: row.bodyshop_name ? String(row.bodyshop_name) : undefined,
     bodyshopRegion: row.bodyshop_region ? String(row.bodyshop_region) : undefined,
+    existingQuote: row.existing_quote as PartnerQuickLeadContext['existingQuote'],
     lead: row.lead as PartnerQuickLeadContext['lead'],
   };
 };
@@ -53,13 +67,15 @@ export const getPartnerLeadByToken = async (token: string): Promise<PartnerQuick
 export const respondPartnerLeadByToken = async (
   token: string,
   action: PartnerQuickRespondAction,
-  options?: { quoteMin?: number; quoteMax?: number; note?: string },
+  options?: { quoteMin?: number; quoteMax?: number; quotePdr?: number; quotePaint?: number; note?: string },
 ): Promise<{ ok: boolean; status?: string; error?: string }> => {
   const { data, error } = await supabase.rpc('respond_partner_lead_by_token' as any, {
     p_token: token,
     p_action: action,
     p_quote_min: options?.quoteMin ?? null,
     p_quote_max: options?.quoteMax ?? null,
+    p_quote_pdr: options?.quotePdr ?? null,
+    p_quote_paint: options?.quotePaint ?? null,
     p_note: options?.note ?? null,
   });
 

@@ -91,6 +91,7 @@ Deno.serve(async (req) => {
         .from('shop_lead_matches')
         .select('id, lead_id')
         .eq('bodyshop_id', payload.bodyshopId)
+        .eq('status', 'new')
         .order('created_at', { ascending: false })
         .limit(1)
         .maybeSingle(),
