@@ -5,3 +5,9 @@
 [build.environment]
   SECRETS_SCAN_OMIT_KEYS = "VITE_SUPABASE_URL,VITE_SUPABASE_ANON_KEY"
   VITE_SUPABASE_URL = "https://wtfstakxspbnghalelby.supabase.co"
+  VITE_SUPABASE_ANON_KEY = "sb_publishable__wJbeP572k2UJRHnLM16eA_4hBHTY46"
+
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200

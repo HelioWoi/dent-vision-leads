@@ -91,17 +91,6 @@ export const provisionPartnerLeadToken = async (matchId: string): Promise<string
   return String(data);
 };
 
-const edgeAuthHeaders = async () => {
-  const envBag = (import.meta as any).env || {};
-  const anonKey = envBag.VITE_SUPABASE_ANON_KEY as string | undefined;
-  const { data: { session } } = await supabase.auth.getSession();
-  const token = session?.access_token || anonKey;
-  return {
-    'Content-Type': 'application/json',
-    ...(token ? { Authorization: `Bearer ${token}`, apikey: anonKey || token } : {}),
-  };
-};
-
 export const testPartnerWhatsApp = async (input: {
   bodyshopId: string;
   phone?: string;
@@ -112,33 +101,66 @@ export const testPartnerWhatsApp = async (input: {
     const appPublicUrl =
       envBag.VITE_APP_PUBLIC_URL || (typeof window !== 'undefined' ? window.location.origin : '');
 
-    const response = await fetch(`${edgeBaseUrl()}/test-partner-whatsapp`, {
-      method: 'POST',
-      headers: await edgeAuthHeaders(),
-      body: JSON.stringify({
-        ...input,
-        appPublicUrl,
-      }),
-    });
-
-    const json = await response.json();
-    if (!response.ok || !json?.success) {
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session?.access_token) {
       return {
         ok: false,
-        error: json?.error || json?.data?.reason || 'WhatsApp test failed.',
-        hint: json?.data?.hint,
-        reason: json?.data?.reason,
+        error: 'Session expired. Log in again at Partner → Login, then retry Test WhatsApp.',
       };
     }
 
-    const data = json.data || {};
+    const { data, error } = await supabase.functions.invoke('test-partner-whatsapp', {
+      body: {
+        ...input,
+        appPublicUrl,
+      },
+    });
+
+    if (error) {
+      return {
+        ok: false,
+        error: error.message || 'WhatsApp test failed.',
+      };
+    }
+
+    const payload = (data || {}) as {
+      success?: boolean;
+      error?: string;
+      data?: {
+        sent?: boolean;
+        message?: string;
+        hint?: string;
+        reason?: string;
+        phone?: string;
+      };
+    };
+
+    if (payload.success === false) {
+      return {
+        ok: false,
+        error: payload.error || payload.data?.reason || 'WhatsApp test failed.',
+        hint: payload.data?.hint,
+        reason: payload.data?.reason,
+      };
+    }
+
+    const result = payload.data || {};
+    if (!result.sent) {
+      return {
+        ok: true,
+        sent: false,
+        reason: result.reason,
+        hint: result.hint,
+        phone: result.phone,
+        error: result.reason || 'WhatsApp test could not be delivered.',
+      };
+    }
+
     return {
       ok: true,
-      sent: !!data.sent,
-      message: data.message,
-      hint: data.hint,
-      reason: data.reason,
-      phone: data.phone,
+      sent: true,
+      message: result.message,
+      phone: result.phone,
     };
   } catch (error) {
     return {

@@ -4,6 +4,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:prod": "VITE_SUPABASE_URL=https://wtfstakxspbnghalelby.supabase.co VITE_SUPABASE_ANON_KEY=sb_publishable__wJbeP572k2UJRHnLM16eA_4hBHTY46 vite",
     "build": "tsc && vite build",
     "preview": "vite preview"
   },
