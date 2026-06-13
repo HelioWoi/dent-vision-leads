@@ -30,7 +30,7 @@ create table if not exists public.service_review_requests (
   match_id uuid not null references public.shop_lead_matches(id) on delete cascade,
   lead_id uuid not null references public.lead_requests(id) on delete cascade,
   bodyshop_id uuid not null references public.bodyshops(id) on delete cascade,
-  token text not null unique default encode(gen_random_bytes(24), 'hex'),
+  token text not null unique default encode(extensions.gen_random_bytes(24), 'hex'),
   customer_email text,
   customer_name text,
   status text not null default 'pending'

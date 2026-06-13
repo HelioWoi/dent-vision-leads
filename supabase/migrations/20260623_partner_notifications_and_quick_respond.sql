@@ -6,7 +6,7 @@ alter table public.notification_settings
 
 create table if not exists public.partner_lead_action_tokens (
   id uuid primary key default gen_random_uuid(),
-  token text not null unique default encode(gen_random_bytes(24), 'hex'),
+  token text not null unique default encode(extensions.gen_random_bytes(24), 'hex'),
   match_id uuid not null references public.shop_lead_matches(id) on delete cascade,
   lead_id uuid not null references public.lead_requests(id) on delete cascade,
   bodyshop_id uuid not null references public.bodyshops(id) on delete cascade,
