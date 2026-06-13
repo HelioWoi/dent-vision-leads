@@ -2,7 +2,7 @@ import { supabase } from './supabaseClient';
 
 export const DEFAULT_WHATSAPP_MESSAGE_TEMPLATE = `Dent Vision — new lead in {{region}}
 {{damage}} · {{estimate}}
-Respond within 3 min: {{link}}`;
+View dent & respond: {{link}}`;
 
 export interface NotifyPartnerLeadInput {
   matchId: string;

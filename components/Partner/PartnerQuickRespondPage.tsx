@@ -7,7 +7,10 @@ import {
 } from '../../services/partnerQuickRespondService';
 
 const parseToken = () => {
-  const hashQuery = window.location.hash.split('?')[1] || '';
+  const hash = window.location.hash.includes('%')
+    ? `#${decodeURIComponent(window.location.hash.slice(1))}`
+    : window.location.hash
+  const hashQuery = hash.split('?')[1] || '';
   const params = new URLSearchParams(hashQuery);
   return params.get('token') || '';
 };

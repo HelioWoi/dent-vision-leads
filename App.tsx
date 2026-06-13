@@ -9,8 +9,18 @@ import PartnerQuickRespondPage from './components/Partner/PartnerQuickRespondPag
 import AdminPlatform from './components/Admin/AdminPlatform'
 import PartnerPlatform from './components/Partner/PartnerPlatform'
 
+const normalizeHash = (hash: string) => {
+  if (!hash || !hash.includes('%')) return hash
+  try {
+    const decoded = `#${decodeURIComponent(hash.slice(1))}`
+    return decoded.startsWith('#') ? decoded : hash
+  } catch {
+    return hash
+  }
+}
+
 const deriveRoute = () => {
-  if (window.location.hash) return window.location.hash
+  if (window.location.hash) return normalizeHash(window.location.hash)
   if (window.location.pathname.startsWith('/admin')) return `#${window.location.pathname}`
   if (window.location.pathname.startsWith('/partner')) return `#${window.location.pathname}`
   return '#/'

@@ -1400,7 +1400,8 @@ const PartnerPlatform: React.FC<PartnerPlatformProps> = ({ route }) => {
 
         <div className="mt-5 space-y-3 rounded-xl border border-[#e5eaf8] bg-[#f8fbff] p-3">
           <p className="text-sm font-semibold text-[#111827]">WhatsApp message</p>
-          <p className="text-xs text-[#64748b]">Sent to your mobile when a new lead arrives. Placeholders: {'{{region}}'}, {'{{damage}}'}, {'{{estimate}}'}, {'{{link}}'}, {'{{customer}}'}.</p>
+          <p className="text-xs text-[#64748b]">Sent to your mobile when a new lead arrives. {'{{link}}'} opens a public page with car photos — accept, quote, or decline (no login). Placeholders: {'{{region}}'}, {'{{damage}}'}, {'{{estimate}}'}, {'{{link}}'}, {'{{customer}}'}.</p>
+          <p className="text-xs text-[#64748b]">WhatsApp profile photo & name: set in Twilio / Meta Business (sandbox shows Twilio default).</p>
           <div>
             <label className="text-xs font-semibold uppercase tracking-[0.08em] text-[#64748b]">WhatsApp number</label>
             <input

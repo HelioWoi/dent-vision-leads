@@ -1,5 +1,6 @@
 import { corsHeaders, fail, ok } from '../_shared/response.ts';
 import { sendTwilioWhatsApp } from '../_shared/twilioWhatsApp.ts';
+import { pickLeadPhotoUrl } from '../_shared/leadPhotos.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.49.1';
 import webpush from 'https://esm.sh/web-push@3.6.7';
 
@@ -12,7 +13,7 @@ interface NotifyPayload {
 
 const DEFAULT_TEMPLATE = `Dent Vision — new lead in {{region}}
 {{damage}} · {{estimate}}
-Respond within 3 min: {{link}}`;
+View dent & respond: {{link}}`;
 
 const formatMoney = (value: number) => `$${Math.round(value).toLocaleString('en-AU')}`;
 
@@ -172,7 +173,10 @@ Deno.serve(async (req) => {
     let whatsappReason: string | undefined;
 
     if (settings?.whatsapp_enabled !== false && whatsappPhone) {
-      const wa = await sendTwilioWhatsApp(String(whatsappPhone), messageBody);
+      const photoUrl = pickLeadPhotoUrl(lead);
+      const wa = await sendTwilioWhatsApp(String(whatsappPhone), messageBody, {
+        mediaUrl: photoUrl,
+      });
       whatsappSent = !!wa.sent;
       whatsappSkipped = !!wa.skipped;
       whatsappReason = wa.reason;

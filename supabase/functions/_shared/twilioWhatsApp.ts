@@ -10,11 +10,16 @@ export type TwilioWhatsAppResult =
   | { sent: true; sid: string }
   | { sent: false; skipped?: true; reason?: string; code?: number | string };
 
-export const sendTwilioWhatsApp = async (toPhone: string, body: string): Promise<TwilioWhatsAppResult> => {
+export const sendTwilioWhatsApp = async (
+  toPhone: string,
+  body: string,
+  options?: { mediaUrl?: string },
+): Promise<TwilioWhatsAppResult> => {
   const accountSid = Deno.env.get('TWILIO_ACCOUNT_SID');
   const authToken = Deno.env.get('TWILIO_AUTH_TOKEN');
   const from = Deno.env.get('TWILIO_WHATSAPP_FROM');
   const contentSid = Deno.env.get('TWILIO_WHATSAPP_CONTENT_SID');
+  const mediaUrl = options?.mediaUrl?.trim();
 
   if (!accountSid || !authToken || !from) {
     return { sent: false, skipped: true, reason: 'Twilio not configured' };
@@ -24,11 +29,14 @@ export const sendTwilioWhatsApp = async (toPhone: string, body: string): Promise
   params.set('From', from.startsWith('whatsapp:') ? from : `whatsapp:${from}`);
   params.set('To', `whatsapp:${normalizeWhatsAppPhone(toPhone)}`);
 
-  if (contentSid) {
+  if (contentSid && !mediaUrl) {
     params.set('ContentSid', contentSid);
     params.set('ContentVariables', JSON.stringify({ 1: body.slice(0, 1024) }));
   } else {
     params.set('Body', body);
+    if (mediaUrl) {
+      params.set('MediaUrl', mediaUrl);
+    }
   }
 
   const response = await fetch(
