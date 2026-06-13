@@ -7,12 +7,20 @@ self.addEventListener('push', (event) => {
   }
 
   event.waitUntil(
-    self.registration.showNotification(payload.title, {
-      body: payload.body,
-      icon: 'https://wtfstakxspbnghalelby.supabase.co/storage/v1/object/public/media/favicon.png',
-      badge: 'https://wtfstakxspbnghalelby.supabase.co/storage/v1/object/public/media/favicon.png',
-      data: { url: payload.url },
-    }),
+    Promise.all([
+      self.registration.showNotification(payload.title, {
+        body: payload.body,
+        icon: 'https://wtfstakxspbnghalelby.supabase.co/storage/v1/object/public/media/favicon.png',
+        badge: 'https://wtfstakxspbnghalelby.supabase.co/storage/v1/object/public/media/favicon.png',
+        data: { url: payload.url },
+        silent: false,
+      }),
+      clients.matchAll({ type: 'window', includeUncontrolled: true }).then((windowClients) => {
+        for (const client of windowClients) {
+          client.postMessage({ type: 'partner-new-lead-push' });
+        }
+      }),
+    ]),
   );
 });
 

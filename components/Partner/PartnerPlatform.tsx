@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   PartnerDataBundle,
   PartnerIdentity,
@@ -14,10 +14,12 @@ import {
 } from '../../services/partnerPlatformService';
 import { completePartnerJob } from '../../services/commissionService';
 import PartnerLogin from './PartnerLogin';
-import { PartnerBookingCalendar, PartnerLeadTable, PartnerAssignmentBadge, PartnerJobTaskList, PartnerCommissionReport, PartnerLeadExportBar } from './PartnerLeadViews';
+import { PartnerBookingCalendar, PartnerLeadTable, PartnerAssignmentBadge, PartnerJobTaskList, PartnerCommissionReport, PartnerLeadExportBar, PartnerLeadDetailPanel } from './PartnerLeadViews';
+import { LEAD_RESPONSE_SLA_MINUTES } from '../../services/leadSla';
 import { uploadBodyshopLogo } from '../../services/bodyshopProfileService';
 import { registerPartnerPush, isPushSupported } from '../../services/partnerPushService';
-import { DEFAULT_WHATSAPP_MESSAGE_TEMPLATE } from '../../services/partnerNotificationService';
+import { DEFAULT_WHATSAPP_MESSAGE_TEMPLATE, testPartnerWhatsApp } from '../../services/partnerNotificationService';
+import { playLeadAlertSound, setPartnerSoundEnabled } from '../../services/notificationSound';
 import { PartnerAvailabilityEditor } from './PartnerAvailabilityEditor';
 import {
   fetchPartnerAvailability,
@@ -216,7 +218,12 @@ const getDefaultBundle = (): PartnerDataBundle => ({
 
 const recomputeBundle = (bundle: PartnerDataBundle): PartnerDataBundle => {
   const leads = [...bundle.leads];
-  const responded = leads.filter((lead) => lead.status === 'quoted' || lead.status === 'inspection');
+  const responded = leads.filter((lead) =>
+    lead.status === 'quoted'
+    || lead.status === 'inspection'
+    || lead.status === 'booked'
+    || lead.status === 'completed'
+  );
   const booked = leads.filter((lead) => lead.status === 'booked');
   const completed = leads.filter((lead) => lead.status === 'completed');
   const metrics = {
@@ -245,17 +252,38 @@ const recomputeBundle = (bundle: PartnerDataBundle): PartnerDataBundle => {
   };
 };
 
-const MetricCard: React.FC<{ title: string; value: string; tone: 'purple' | 'orange' | 'blue' | 'green'; hint: string; icon: React.ReactNode }> = ({
+const MetricCard: React.FC<{
+  title: string;
+  value: string;
+  tone: 'purple' | 'orange' | 'blue' | 'green';
+  hint: string;
+  icon: React.ReactNode;
+  href?: string;
+}> = ({
   title,
   value,
   tone,
   hint,
   icon,
+  href,
 }) => {
+  const iconButton = href ? (
+    <button
+      type="button"
+      onClick={() => { window.location.hash = href; }}
+      className="rounded-xl transition hover:scale-105 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#4f46e5]"
+      aria-label={`Open ${title}`}
+    >
+      <IconWrap tone={tone}>{icon}</IconWrap>
+    </button>
+  ) : (
+    <IconWrap tone={tone}>{icon}</IconWrap>
+  );
+
   return (
     <div className="rounded-2xl border border-[#e4e9f8] bg-white p-4 shadow-[0_14px_30px_-24px_rgba(15,23,42,0.55)] transition hover:-translate-y-0.5 hover:shadow-[0_18px_38px_-24px_rgba(15,23,42,0.65)]">
       <div className="flex items-start justify-between">
-        <IconWrap tone={tone}>{icon}</IconWrap>
+        {iconButton}
       </div>
       <p className="mt-3 text-xs font-semibold tracking-[0.06em] uppercase text-[#64748b]">{title}</p>
       <p className="mt-1 text-3xl font-extrabold text-[#111827]">{value}</p>
@@ -291,10 +319,27 @@ const PartnerPlatform: React.FC<PartnerPlatformProps> = ({ route }) => {
   const [logoUploading, setLogoUploading] = useState(false);
   const [pushMessage, setPushMessage] = useState('');
   const [pushRegistering, setPushRegistering] = useState(false);
+  const [whatsappTesting, setWhatsappTesting] = useState(false);
+  const [notificationFeedback, setNotificationFeedback] = useState('');
   const [bookedView, setBookedView] = useState<'calendar' | 'table'>('calendar');
   const [availabilitySlots, setAvailabilitySlots] = useState<PartnerAvailabilitySlot[]>([]);
   const [availabilityLoading, setAvailabilityLoading] = useState(false);
   const [availabilitySaving, setAvailabilitySaving] = useState(false);
+  const knownNewLeadIdsRef = useRef<Set<string> | null>(null);
+
+  const maybePlayNewLeadSound = (leads: PartnerLead[], soundEnabled: boolean) => {
+    if (!soundEnabled) return;
+    const newLeadIds = leads.filter((lead) => lead.status === 'new').map((lead) => lead.id);
+    if (!knownNewLeadIdsRef.current) {
+      knownNewLeadIdsRef.current = new Set(newLeadIds);
+      return;
+    }
+    const freshIds = newLeadIds.filter((id) => !knownNewLeadIdsRef.current!.has(id));
+    knownNewLeadIdsRef.current = new Set(newLeadIds);
+    if (freshIds.length) {
+      void playLeadAlertSound();
+    }
+  };
 
   useEffect(() => {
     const timer = setInterval(() => setTick((v) => v + 1), 1000);
@@ -342,6 +387,7 @@ const PartnerPlatform: React.FC<PartnerPlatformProps> = ({ route }) => {
     if (!activeIdentity.isPartner) return;
     setBusy(true);
     const bundle = await loadPartnerDataBundle(activeIdentity);
+    maybePlayNewLeadSound(bundle.leads, bundle.notificationSettings.soundEnabled);
     setData(recomputeBundle(bundle));
     setBusy(false);
   };
@@ -388,6 +434,17 @@ const PartnerPlatform: React.FC<PartnerPlatformProps> = ({ route }) => {
     }, 25000);
     return () => window.clearInterval(timer);
   }, [identity.isPartner, parsedRoute.isLogin, parsedRoute.section, identity.bodyshopId]);
+
+  useEffect(() => {
+    if (!identity.isPartner || parsedRoute.isLogin) return;
+    const onMessage = (event: MessageEvent) => {
+      if (event.data?.type !== 'partner-new-lead-push') return;
+      if (!data.notificationSettings.soundEnabled) return;
+      void playLeadAlertSound();
+    };
+    navigator.serviceWorker?.addEventListener('message', onMessage);
+    return () => navigator.serviceWorker?.removeEventListener('message', onMessage);
+  }, [identity.isPartner, parsedRoute.isLogin, data.notificationSettings.soundEnabled]);
 
   useEffect(() => {
     if (!parsedRoute.isPartnerPath || identityLoading) return;
@@ -632,6 +689,9 @@ const PartnerPlatform: React.FC<PartnerPlatformProps> = ({ route }) => {
   };
 
   const setNotificationSetting = (key: keyof PartnerDataBundle['notificationSettings'], value: boolean) => {
+    if (key === 'soundEnabled') {
+      setPartnerSoundEnabled(value);
+    }
     setData((prev) => ({
       ...prev,
       notificationSettings: {
@@ -641,10 +701,49 @@ const PartnerPlatform: React.FC<PartnerPlatformProps> = ({ route }) => {
     }));
   };
 
-  const saveNotificationSettings = () => {
-    if (data.bodyshop.id) {
-      void updatePartnerNotificationSettings(data.bodyshop.id, data.notificationSettings);
+  const saveNotificationSettings = async () => {
+    setPartnerSoundEnabled(data.notificationSettings.soundEnabled);
+    setNotificationFeedback('');
+    if (!data.bodyshop.id) return;
+    await updatePartnerNotificationSettings(data.bodyshop.id, data.notificationSettings);
+    setNotificationFeedback('Preferences saved.');
+  };
+
+  const handleTestSound = () => {
+    void playLeadAlertSound();
+  };
+
+  const handleTestWhatsApp = async () => {
+    if (!data.bodyshop.id) return;
+    if (!data.notificationSettings.whatsappPhone.trim()) {
+      setNotificationFeedback('Add a WhatsApp number first, then save or test.');
+      return;
     }
+
+    setWhatsappTesting(true);
+    setNotificationFeedback('');
+    await updatePartnerNotificationSettings(data.bodyshop.id, data.notificationSettings);
+
+    const result = await testPartnerWhatsApp({
+      bodyshopId: data.bodyshop.id,
+      phone: data.notificationSettings.whatsappPhone.trim(),
+      messageTemplate: data.notificationSettings.whatsappMessageTemplate,
+    });
+
+    setWhatsappTesting(false);
+
+    if (result.ok && result.sent) {
+      setNotificationFeedback(
+        result.message || `Test sent to ${result.phone || data.notificationSettings.whatsappPhone}. Check WhatsApp.`,
+      );
+      return;
+    }
+
+    const parts = [
+      result.error || result.reason || 'WhatsApp test failed.',
+      result.hint,
+    ].filter(Boolean);
+    setNotificationFeedback(parts.join(' '));
   };
 
   const handleEnablePush = async () => {
@@ -781,7 +880,7 @@ const PartnerPlatform: React.FC<PartnerPlatformProps> = ({ route }) => {
                 {timer.label}
               </div>
             </div>
-            <p className="text-[11px] font-semibold text-[#475569] text-left lg:mt-2 lg:text-center">Respond within<br /><span className="text-[#fb923c]">5 minutes</span></p>
+            <p className="text-[11px] font-semibold text-[#475569] text-left lg:mt-2 lg:text-center">Respond within<br /><span className="text-[#fb923c]">{LEAD_RESPONSE_SLA_MINUTES} minutes</span></p>
           </div>
         </div>
 
@@ -912,11 +1011,11 @@ const PartnerPlatform: React.FC<PartnerPlatformProps> = ({ route }) => {
         {renderCompleteJobsLink()}
 
         <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
-          <MetricCard title="New Leads Today" value={String(data.metrics.newLeadsToday)} hint="Live queue" tone="purple" icon={<svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 2l3 6 6 .8-4.5 4.4 1 6.8L12 17l-5.5 3 1-6.8L3 8.8 9 8l3-6z"/></svg>} />
-          <MetricCard title="Pending Response" value={String(data.metrics.pendingResponse)} hint="Respond within 5 min" tone="orange" icon={<svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>} />
-          <MetricCard title="Booked Jobs" value={String(data.bookedJobs.length)} hint="Scheduled repairs" tone="blue" icon={<svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M8 2v4M16 2v4M3 10h18"/></svg>} />
-          <MetricCard title="Acceptance Rate" value={ratioPercent(data.metrics.acceptanceRate)} hint="Quotes to bookings" tone="green" icon={<svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M4 20V10M10 20V4M16 20v-6M22 20V8"/></svg>} />
-          <MetricCard title="Avg. Response" value={`${data.metrics.avgResponseMinutes} min`} hint="Target under 5 min" tone="blue" icon={<svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M13 2L3 14h7l-1 8 10-12h-7l1-8z"/></svg>} />
+          <MetricCard href="#/partner/leads" title="New Leads Today" value={String(data.metrics.newLeadsToday)} hint="Live queue" tone="purple" icon={<svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 2l3 6 6 .8-4.5 4.4 1 6.8L12 17l-5.5 3 1-6.8L3 8.8 9 8l3-6z"/></svg>} />
+          <MetricCard href="#/partner/leads" title="Pending Response" value={String(data.metrics.pendingResponse)} hint={`Respond within ${LEAD_RESPONSE_SLA_MINUTES} min`} tone="orange" icon={<svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>} />
+          <MetricCard href="#/partner/booked" title="Booked Jobs" value={String(data.bookedJobs.length)} hint="Scheduled repairs" tone="blue" icon={<svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M8 2v4M16 2v4M3 10h18"/></svg>} />
+          <MetricCard href="#/partner/performance" title="Acceptance Rate" value={ratioPercent(data.metrics.acceptanceRate)} hint="Quotes to bookings" tone="green" icon={<svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M4 20V10M10 20V4M16 20v-6M22 20V8"/></svg>} />
+          <MetricCard href="#/partner/performance" title="Avg. Response" value={`${data.metrics.avgResponseMinutes} min`} hint={`Target under ${LEAD_RESPONSE_SLA_MINUTES} min`} tone="blue" icon={<svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M13 2L3 14h7l-1 8 10-12h-7l1-8z"/></svg>} />
         </div>
 
         <div className="grid gap-4 xl:grid-cols-[1fr_340px]">
@@ -968,7 +1067,26 @@ const PartnerPlatform: React.FC<PartnerPlatformProps> = ({ route }) => {
                 <div className="flex items-center justify-between"><p className="text-sm">Email Notifications</p><Toggle checked={data.notificationSettings.emailEnabled} onChange={(next) => setNotificationSetting('emailEnabled', next)} /></div>
                 <div className="flex items-center justify-between"><p className="text-sm">Sound Alerts</p><Toggle checked={data.notificationSettings.soundEnabled} onChange={(next) => setNotificationSetting('soundEnabled', next)} /></div>
               </div>
-              <button type="button" onClick={saveNotificationSettings} className="mt-4 w-full rounded-xl border border-[#d3dcff] bg-[#f4f7ff] py-2 text-sm font-semibold text-[#4f46e5]">Manage Preferences</button>
+              <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                <button
+                  type="button"
+                  onClick={() => void handleTestWhatsApp()}
+                  disabled={whatsappTesting}
+                  className="rounded-xl border-2 border-[#25D366] bg-[#dcfce7] py-2 text-sm font-extrabold text-[#166534] disabled:opacity-60"
+                >
+                  {whatsappTesting ? 'Sending…' : 'Test WhatsApp'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => (window.location.hash = '#/partner/notifications')}
+                  className="rounded-xl border border-[#d3dcff] bg-[#f4f7ff] py-2 text-sm font-semibold text-[#4f46e5]"
+                >
+                  All settings
+                </button>
+              </div>
+              {notificationFeedback && parsedRoute.section === 'dashboard' && (
+                <p className="mt-2 text-xs text-[#15803d]">{notificationFeedback}</p>
+              )}
             </section>
           </div>
         </div>
@@ -1120,7 +1238,24 @@ const PartnerPlatform: React.FC<PartnerPlatformProps> = ({ route }) => {
           </div>
         </div>
       </div>
-      {bookedView === 'calendar' ? <PartnerBookingCalendar leads={data.bookedJobs} /> : null}
+      {bookedView === 'calendar' ? (
+        <>
+          <PartnerBookingCalendar
+            leads={data.bookedJobs}
+            selectedLeadId={selectedTableLeadId}
+            onSelectLead={(lead) => setSelectedTableLeadId((current) => (current === lead.id ? null : lead.id))}
+            onPreview={(url, alt) => setPhotoPreview({ url, alt })}
+          />
+          {selectedTableLeadId && data.bookedJobs.some((l) => l.id === selectedTableLeadId) ? (
+            <div className="rounded-2xl border border-[#e4e9f8] bg-white p-4">
+              <PartnerLeadDetailPanel
+                lead={data.bookedJobs.find((l) => l.id === selectedTableLeadId)!}
+                onPreview={(url, alt) => setPhotoPreview({ url, alt })}
+              />
+            </div>
+          ) : null}
+        </>
+      ) : null}
       {bookedView === 'table' ? (
         <PartnerLeadTable
           leads={data.bookedJobs}
@@ -1161,8 +1296,18 @@ const PartnerPlatform: React.FC<PartnerPlatformProps> = ({ route }) => {
           leads={data.bookedJobs}
           onComplete={handleCompleteJob}
           onPreview={(url, alt) => setPhotoPreview({ url, alt })}
+          selectedLeadId={selectedTableLeadId}
+          onSelectLead={(lead) => setSelectedTableLeadId((current) => (current === lead.id ? null : lead.id))}
           emptyMessage="No repairs to complete. Booked jobs appear here after your customer schedules."
         />
+        {selectedTableLeadId && data.bookedJobs.some((l) => l.id === selectedTableLeadId) ? (
+          <div className="rounded-2xl border border-[#e4e9f8] bg-white p-4">
+            <PartnerLeadDetailPanel
+              lead={data.bookedJobs.find((l) => l.id === selectedTableLeadId)!}
+              onPreview={(url, alt) => setPhotoPreview({ url, alt })}
+            />
+          </div>
+        ) : null}
         {data.bookedJobs.length ? (
           <PartnerLeadExportBar leads={data.bookedJobs} shopName={data.bodyshop.name} label="Export open tasks" />
         ) : null}
@@ -1218,7 +1363,7 @@ const PartnerPlatform: React.FC<PartnerPlatformProps> = ({ route }) => {
           <div className="rounded-xl border border-[#e5eaf8] p-3"><p className="text-xs text-[#64748b]">Jobs Booked</p><p className="text-2xl font-extrabold text-[#111827]">{data.performance.jobsBooked}</p></div>
           <div className="rounded-xl border border-[#e5eaf8] p-3"><p className="text-xs text-[#64748b]">Avg Response Time</p><p className="text-2xl font-extrabold text-[#111827]">{data.performance.averageResponseMinutes} min</p></div>
         </div>
-        <p className="mt-4 rounded-xl border border-[#d3dcff] bg-[#f3f7ff] px-3 py-2 text-sm text-[#475569]">Tip: Respond within 5 minutes to rank higher for new leads in your area.</p>
+        <p className="mt-4 rounded-xl border border-[#d3dcff] bg-[#f3f7ff] px-3 py-2 text-sm text-[#475569]">Tip: Respond within {LEAD_RESPONSE_SLA_MINUTES} minutes to rank higher for new leads in your area.</p>
       </section>
     </div>
   );
@@ -1227,6 +1372,25 @@ const PartnerPlatform: React.FC<PartnerPlatformProps> = ({ route }) => {
     <div className="grid gap-4 lg:grid-cols-[360px_1fr]">
       <section className="rounded-2xl border border-[#e4e9f8] bg-white p-4">
         <h3 className="text-lg font-extrabold text-[#111827]">Notification Preferences</h3>
+
+        <div className="mt-4 grid gap-2 sm:grid-cols-2">
+          <button
+            type="button"
+            onClick={() => void handleTestWhatsApp()}
+            disabled={whatsappTesting}
+            className="rounded-xl border-2 border-[#25D366] bg-[#dcfce7] py-3 text-sm font-extrabold text-[#166534] disabled:opacity-60"
+          >
+            {whatsappTesting ? 'Sending…' : 'Test WhatsApp'}
+          </button>
+          <button
+            type="button"
+            onClick={handleTestSound}
+            className="rounded-xl border border-[#cfd9ff] bg-[#eef2ff] py-3 text-sm font-extrabold text-[#4338ca]"
+          >
+            Test sound
+          </button>
+        </div>
+
         <div className="mt-4 space-y-3">
           <div className="flex items-center justify-between"><p>WhatsApp alerts</p><Toggle checked={data.notificationSettings.whatsappEnabled} onChange={(next) => setNotificationSetting('whatsappEnabled', next)} /></div>
           <div className="flex items-center justify-between"><p>Push Notifications</p><Toggle checked={data.notificationSettings.pushEnabled} onChange={(next) => setNotificationSetting('pushEnabled', next)} /></div>
@@ -1278,8 +1442,19 @@ const PartnerPlatform: React.FC<PartnerPlatformProps> = ({ route }) => {
           </button>
         )}
         {pushMessage && <p className="mt-2 text-xs text-[#64748b]">{pushMessage}</p>}
+        {notificationFeedback && (
+          <p className={`mt-3 rounded-xl border px-3 py-2 text-xs leading-relaxed ${
+            notificationFeedback.toLowerCase().includes('failed')
+            || notificationFeedback.toLowerCase().includes('twilio')
+            || notificationFeedback.includes('Add a')
+              ? 'border-[#fcd34d] bg-[#fffbeb] text-[#92400e]'
+              : 'border-[#86efac] bg-[#ecfdf3] text-[#166534]'
+          }`}>
+            {notificationFeedback}
+          </p>
+        )}
 
-        <button type="button" onClick={saveNotificationSettings} className="mt-4 w-full rounded-xl bg-[#273548] py-2 text-sm font-semibold text-white">Save Preferences</button>
+        <button type="button" onClick={() => void saveNotificationSettings()} className="mt-4 w-full rounded-xl bg-[#273548] py-2 text-sm font-semibold text-white">Save Preferences</button>
       </section>
       <section className="rounded-2xl border border-[#e4e9f8] bg-white p-4">
         <h3 className="text-lg font-extrabold text-[#111827]">Realtime Activity Feed</h3>

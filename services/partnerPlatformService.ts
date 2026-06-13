@@ -1,6 +1,11 @@
 import { supabase } from './supabaseClient';
 import { CommissionSummary, fetchCommissionLedger } from './commissionService';
 import { DEFAULT_WHATSAPP_MESSAGE_TEMPLATE } from './partnerNotificationService';
+import { getPartnerSoundEnabled } from './notificationSound';
+
+export const normalizeWhatsAppTemplate = (template: string) =>
+  template.replace(/Respond within 5 min/gi, 'Respond within 3 min');
+import { LEAD_RESPONSE_SLA_SECONDS } from './leadSla';
 
 export type PartnerRouteSection =
   | 'dashboard'
@@ -280,7 +285,7 @@ const getMockBundle = (identity?: PartnerIdentity): PartnerDataBundle => {
       whatsappMessageTemplate: DEFAULT_WHATSAPP_MESSAGE_TEMPLATE,
     },
     activity: [],
-    quickTip: 'Respond within 5 minutes to maximise booking conversion on Sunshine Coast leads.',
+    quickTip: 'Respond within 3 minutes to maximise booking conversion on Sunshine Coast leads.',
     settings: {
       businessName: bodyshopName,
       logoUrl: undefined,
@@ -337,7 +342,7 @@ const mapMatchRowsToLeads = (matches: any[], bodyshopName?: string): PartnerLead
     const customerName = lead?.customer_name ? String(lead.customer_name) : 'Customer';
 
     const createdAt = lead?.created_at || match.created_at || minutesAgoISO(120);
-    const responseDeadlineAt = match.response_deadline || new Date(new Date(createdAt).getTime() + 300 * 1000).toISOString();
+    const responseDeadlineAt = match.response_deadline || new Date(new Date(createdAt).getTime() + LEAD_RESPONSE_SLA_SECONDS * 1000).toISOString();
     const photoUrls = parsePhotoUrls(lead?.photo_urls || lead?.photo_url);
     const fallbackPhoto = DEMO_PHOTOS[index % DEMO_PHOTOS.length];
     const paintRepairNeeded = !!lead?.paint_repair_needed;
@@ -839,7 +844,12 @@ export const loadPartnerDataBundle = async (identity: PartnerIdentity): Promise<
     },
     metrics,
     leads: partnerLeads,
-    respondedLeads: partnerLeads.filter((lead) => lead.status === 'quoted' || lead.status === 'inspection'),
+    respondedLeads: partnerLeads.filter((lead) =>
+      lead.status === 'quoted'
+      || lead.status === 'inspection'
+      || lead.status === 'booked'
+      || lead.status === 'completed'
+    ),
     bookedJobs: partnerLeads.filter((lead) => lead.status === 'booked'),
     completedJobs: partnerLeads.filter((lead) => lead.status === 'completed'),
     commission,
@@ -854,12 +864,14 @@ export const loadPartnerDataBundle = async (identity: PartnerIdentity): Promise<
       pushEnabled: notificationRow?.push_enabled !== false,
       smsEnabled: !!notificationRow?.sms_enabled,
       emailEnabled: notificationRow?.email_enabled !== false,
-      soundEnabled: true,
+      soundEnabled: getPartnerSoundEnabled(),
       whatsappEnabled: notificationRow?.whatsapp_enabled !== false,
       whatsappPhone: notificationRow?.whatsapp_phone ? String(notificationRow.whatsapp_phone) : '',
-      whatsappMessageTemplate: notificationRow?.whatsapp_message_template
-        ? String(notificationRow.whatsapp_message_template)
-        : DEFAULT_WHATSAPP_MESSAGE_TEMPLATE,
+      whatsappMessageTemplate: normalizeWhatsAppTemplate(
+        notificationRow?.whatsapp_message_template
+          ? String(notificationRow.whatsapp_message_template)
+          : DEFAULT_WHATSAPP_MESSAGE_TEMPLATE,
+      ),
     },
     activity: [
       {
@@ -946,7 +958,7 @@ export const updatePartnerNotificationSettings = async (
       dashboard_enabled: true,
       primary_channel: settings.whatsappEnabled ? 'whatsapp' : settings.pushEnabled ? 'push' : settings.emailEnabled ? 'email' : 'dashboard',
       backup_channel: settings.emailEnabled ? 'email' : 'dashboard',
-      response_deadline_seconds: 300,
+      response_deadline_seconds: LEAD_RESPONSE_SLA_SECONDS,
       retry_logic: '1 reminder at 60s, then route next bodyshop',
       notification_radius: 20,
       lead_categories_accepted: ['minor', 'medium', 'hail'],
@@ -1011,7 +1023,7 @@ export const updatePartnerSettings = async (
         push_enabled: true,
         email_enabled: true,
         dashboard_enabled: true,
-        response_deadline_seconds: 300,
+        response_deadline_seconds: LEAD_RESPONSE_SLA_SECONDS,
       });
     }
   } catch {

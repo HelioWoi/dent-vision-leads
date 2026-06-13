@@ -1,4 +1,5 @@
 import { corsHeaders, fail, ok } from '../_shared/response.ts';
+import { sendTwilioWhatsApp } from '../_shared/twilioWhatsApp.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.49.1';
 import webpush from 'https://esm.sh/web-push@3.6.7';
 
@@ -11,7 +12,7 @@ interface NotifyPayload {
 
 const DEFAULT_TEMPLATE = `Dent Vision — new lead in {{region}}
 {{damage}} · {{estimate}}
-Respond within 5 min: {{link}}`;
+Respond within 3 min: {{link}}`;
 
 const formatMoney = (value: number) => `$${Math.round(value).toLocaleString('en-AU')}`;
 
@@ -31,59 +32,6 @@ const applyTemplate = (
     (text, [key, value]) => text.replaceAll(`{{${key}}}`, value),
     template,
   );
-
-const normalizeWhatsAppPhone = (phone: string) => {
-  const digits = phone.replace(/[^\d+]/g, '');
-  if (digits.startsWith('+')) return digits;
-  if (digits.startsWith('0')) return `+61${digits.slice(1)}`;
-  if (digits.startsWith('61')) return `+${digits}`;
-  return `+${digits}`;
-};
-
-const sendTwilioWhatsApp = async (toPhone: string, body: string) => {
-  const accountSid = Deno.env.get('TWILIO_ACCOUNT_SID');
-  const authToken = Deno.env.get('TWILIO_AUTH_TOKEN');
-  const from = Deno.env.get('TWILIO_WHATSAPP_FROM');
-  const contentSid = Deno.env.get('TWILIO_WHATSAPP_CONTENT_SID');
-
-  if (!accountSid || !authToken || !from) {
-    return { sent: false, skipped: true, reason: 'Twilio not configured' };
-  }
-
-  const params = new URLSearchParams();
-  params.set('From', from.startsWith('whatsapp:') ? from : `whatsapp:${from}`);
-  params.set('To', `whatsapp:${normalizeWhatsAppPhone(toPhone)}`);
-
-  if (contentSid) {
-    params.set('ContentSid', contentSid);
-    params.set('ContentVariables', JSON.stringify({ 1: body.slice(0, 1024) }));
-  } else {
-    params.set('Body', body);
-  }
-
-  const response = await fetch(
-    `https://api.twilio.com/2010-04-01/Accounts/${accountSid}/Messages.json`,
-    {
-      method: 'POST',
-      headers: {
-        Authorization: `Basic ${btoa(`${accountSid}:${authToken}`)}`,
-        'Content-Type': 'application/x-www-form-urlencoded',
-      },
-      body: params,
-    },
-  );
-
-  const result = await response.json();
-  if (!response.ok) {
-    return {
-      sent: false,
-      reason: result?.message || 'Twilio request failed',
-      code: result?.code,
-    };
-  }
-
-  return { sent: true, sid: result.sid };
-};
 
 const sendResendEmail = async (to: string, subject: string, html: string) => {
   const resendKey = Deno.env.get('RESEND_API_KEY');

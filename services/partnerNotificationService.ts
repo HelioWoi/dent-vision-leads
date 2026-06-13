@@ -2,7 +2,7 @@ import { supabase } from './supabaseClient';
 
 export const DEFAULT_WHATSAPP_MESSAGE_TEMPLATE = `Dent Vision — new lead in {{region}}
 {{damage}} · {{estimate}}
-Respond within 5 min: {{link}}`;
+Respond within 3 min: {{link}}`;
 
 export interface NotifyPartnerLeadInput {
   matchId: string;
@@ -17,6 +17,16 @@ export interface NotifyPartnerLeadResult {
   emailSent?: boolean;
   respondUrl?: string;
   devMode?: boolean;
+  error?: string;
+}
+
+export interface TestWhatsAppResult {
+  ok: boolean;
+  sent?: boolean;
+  message?: string;
+  hint?: string;
+  reason?: string;
+  phone?: string;
   error?: string;
 }
 
@@ -83,4 +93,61 @@ export const provisionPartnerLeadToken = async (matchId: string): Promise<string
   });
   if (error || !data) return null;
   return String(data);
+};
+
+const edgeAuthHeaders = async () => {
+  const envBag = (import.meta as any).env || {};
+  const anonKey = envBag.VITE_SUPABASE_ANON_KEY as string | undefined;
+  const { data: { session } } = await supabase.auth.getSession();
+  const token = session?.access_token || anonKey;
+  return {
+    'Content-Type': 'application/json',
+    ...(token ? { Authorization: `Bearer ${token}`, apikey: anonKey || token } : {}),
+  };
+};
+
+export const testPartnerWhatsApp = async (input: {
+  bodyshopId: string;
+  phone?: string;
+  messageTemplate?: string;
+}): Promise<TestWhatsAppResult> => {
+  try {
+    const envBag = (import.meta as any).env || {};
+    const appPublicUrl =
+      envBag.VITE_APP_PUBLIC_URL || (typeof window !== 'undefined' ? window.location.origin : '');
+
+    const response = await fetch(`${edgeBaseUrl()}/test-partner-whatsapp`, {
+      method: 'POST',
+      headers: await edgeAuthHeaders(),
+      body: JSON.stringify({
+        ...input,
+        appPublicUrl,
+      }),
+    });
+
+    const json = await response.json();
+    if (!response.ok || !json?.success) {
+      return {
+        ok: false,
+        error: json?.error || json?.data?.reason || 'WhatsApp test failed.',
+        hint: json?.data?.hint,
+        reason: json?.data?.reason,
+      };
+    }
+
+    const data = json.data || {};
+    return {
+      ok: true,
+      sent: !!data.sent,
+      message: data.message,
+      hint: data.hint,
+      reason: data.reason,
+      phone: data.phone,
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      error: error instanceof Error ? error.message : 'WhatsApp test failed.',
+    };
+  }
 };

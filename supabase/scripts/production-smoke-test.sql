@@ -22,13 +22,13 @@ SET
     nullif(trim(whatsapp_message_template), ''),
     'Dent Vision — new lead in {{region}}
 {{damage}} · {{estimate}}
-Respond within 5 min: {{link}}'
+Respond within 3 min: {{link}}'
   ),
   push_enabled = true,
   email_enabled = true,
   primary_channel = 'whatsapp',
   backup_channel = 'email',
-  response_deadline_seconds = 300
+  response_deadline_seconds = 180
 WHERE bodyshop_id = '550e8400-e29b-41d4-a716-446655440001';
 
 -- Create notification_settings row if migration seed was missing
@@ -56,11 +56,11 @@ SELECT
   '+61491706580',
   'Dent Vision — new lead in {{region}}
 {{damage}} · {{estimate}}
-Respond within 5 min: {{link}}',
+Respond within 3 min: {{link}}',
   true,
   'whatsapp',
   'email',
-  300,
+  180,
   35,
   array['pdr', 'hail', 'crease', 'paint']
 WHERE NOT EXISTS (
@@ -151,7 +151,7 @@ BEGIN
     p_bodyshop_id := '550e8400-e29b-41d4-a716-446655440001'::uuid,
     p_ai_estimate_min := 280,
     p_ai_estimate_max := 420,
-    p_response_deadline := now() + interval '5 minutes',
+    p_response_deadline := now() + interval '3 minutes',
     p_distance_miles := 1.2
   );
 

@@ -20,3 +20,9 @@ verify_jwt = false
 
 [functions.chatbot-assistant]
 verify_jwt = false
+
+[functions.notify-partner-new-lead]
+verify_jwt = false
+
+[functions.test-partner-whatsapp]
+verify_jwt = false

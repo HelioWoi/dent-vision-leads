@@ -1,5 +1,6 @@
 import React from 'react';
 import { PartnerRouteSection } from '../../services/partnerPlatformService';
+import { LEAD_RESPONSE_SLA_SECONDS } from '../../services/leadSla';
 
 export type ParsedPartnerRoute = {
   isPartnerPath: boolean;
@@ -83,14 +84,14 @@ export const formatInvoiceDueDate = (completedAt?: string) => {
 
 export const nextMonthlyInvoiceDate = () => formatInvoiceDueDate(new Date().toISOString());
 
-export const getLeadTimeLeft = (deadlineAt: string) => {
+export const getLeadTimeLeft = (deadlineAt: string, slaSeconds = LEAD_RESPONSE_SLA_SECONDS) => {
   const seconds = Math.max(0, Math.floor((new Date(deadlineAt).getTime() - Date.now()) / 1000));
   const mm = String(Math.floor(seconds / 60)).padStart(2, '0');
   const ss = String(seconds % 60).padStart(2, '0');
   return {
     seconds,
     label: `${mm}:${ss}`,
-    ratio: Math.min(1, seconds / 60),
+    ratio: slaSeconds > 0 ? Math.min(1, seconds / slaSeconds) : 0,
   };
 };
 

@@ -12,6 +12,10 @@ interface EstimateData {
   /** Dent (PDR) portion — same as estimateMin/Max until shop adds paint */
   pdrEstimateMin?: number;
   pdrEstimateMax?: number;
+  paintEstimateMin?: number;
+  paintEstimateMax?: number;
+  combinedEstimateMin?: number;
+  combinedEstimateMax?: number;
   confidence: number;
   dents: number;
   scratches: number;
@@ -263,7 +267,12 @@ const EstimateResults: React.FC = () => {
   const highestPrice = shops[shops.length - 1]?.price ?? 0;
   const pdrMin = data.pdrEstimateMin ?? data.estimateMin;
   const pdrMax = data.pdrEstimateMax ?? data.estimateMax;
-  const aiMid = Math.round((pdrMin + pdrMax) / 2) || Math.round((data.estimateMin + data.estimateMax) / 2) || 275;
+  const paintMin = data.paintEstimateMin ?? 0;
+  const paintMax = data.paintEstimateMax ?? 0;
+  const hasPaintEstimate = !!(data.paintRepairNeeded && paintMin > 0 && paintMax > 0);
+  const aiMid = hasPaintEstimate
+    ? Math.round(((data.combinedEstimateMin ?? pdrMin + paintMin) + (data.combinedEstimateMax ?? pdrMax + paintMax)) / 2)
+    : Math.round((pdrMin + pdrMax) / 2) || Math.round((data.estimateMin + data.estimateMax) / 2) || 275;
 
   // panelBreakdownData (saved from analysis step) is the authoritative source.
   // Fall back to analysis.panels if not present (single-panel flow).
@@ -287,8 +296,8 @@ const EstimateResults: React.FC = () => {
   const breakdownMin = panelPricing.reduce((sum, p) => sum + p.min, 0);
   const breakdownMax = panelPricing.reduce((sum, p) => sum + p.max, 0);
   const hasPanelBreakdown = panelPricing.length > 0;
-  const finalMin = hasPanelBreakdown ? breakdownMin : data.estimateMin;
-  const finalMax = hasPanelBreakdown ? breakdownMax : data.estimateMax;
+  const finalMin = hasPanelBreakdown ? breakdownMin : (hasPaintEstimate ? (data.combinedEstimateMin ?? pdrMin + paintMin) : data.estimateMin);
+  const finalMax = hasPanelBreakdown ? breakdownMax : (hasPaintEstimate ? (data.combinedEstimateMax ?? pdrMax + paintMax) : data.estimateMax);
   const finalMid = Math.round((finalMin + finalMax) / 2);
   const barPct = highestPrice > lowestPrice
     ? ((aiMid - lowestPrice) / (highestPrice - lowestPrice)) * 100
@@ -745,17 +754,27 @@ const EstimateResults: React.FC = () => {
                       </div>
                       <div className="flex items-center justify-between text-sm text-[#64748b]">
                         <span>Pintura (lascada)</span>
-                        <span className="font-medium">Orçamento na loja</span>
+                        <span className="font-semibold text-[#111827]">
+                          {hasPaintEstimate ? `$${paintMin} – $${paintMax}` : 'Orçamento na loja'}
+                        </span>
                       </div>
+                      {hasPaintEstimate ? (
+                        <div className="flex items-center justify-between border-t border-orange-200/80 pt-2 text-sm font-semibold text-[#111827]">
+                          <span>Total indicativo (PDR + pintura)</span>
+                          <span>${data.combinedEstimateMin ?? pdrMin + paintMin} – ${data.combinedEstimateMax ?? pdrMax + paintMax}</span>
+                        </div>
+                      ) : null}
                       <p className="text-[11px] text-orange-800 border-t border-orange-200/80 pt-2">
-                        Total final = PDR + pintura quando a oficina responder (ex.: PDR $435 + Paint $180).
+                        {hasPaintEstimate
+                          ? 'Valores indicativos — a oficina confirma após inspeção presencial.'
+                          : 'Total final = PDR + pintura quando a oficina responder (ex.: PDR $435 + Paint $180).'}
                       </p>
                     </div>
                   ) : null}
                   <div className="flex items-end justify-between">
                     <div>
                       <p className="text-[11px] text-[#9ca3af] uppercase tracking-wide">
-                        {data.paintRepairNeeded ? 'PDR estimate' : 'Final Price'}
+                        {data.paintRepairNeeded ? (hasPaintEstimate ? 'Total indicativo (PDR + pintura)' : 'PDR estimate') : 'Final Price'}
                       </p>
                       <p className="text-3xl font-extrabold text-[#111827]">${finalMid}</p>
                       <p className="text-[11px] text-[#9ca3af]">Range: ${finalMin} – ${finalMax}</p>

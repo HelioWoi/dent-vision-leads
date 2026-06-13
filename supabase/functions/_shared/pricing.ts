@@ -487,3 +487,18 @@ export const priceForCategory = (category: number, dentCount = 1): { min: number
   const m = progressiveDentMultiplier(dentCount);
   return { min: Math.round(e.priceMin * m), max: Math.round(e.priceMax * m) };
 };
+
+/** Indicative panel touch-up / repaint band when paint is chipped (separate from PDR). */
+export const paintTouchUpForCategory = (category: number): { min: number; max: number } => {
+  const cat = clampCategory(category);
+  const bands: ReadonlyArray<{ min: number; max: number }> = [
+    { min: 95, max: 145 },
+    { min: 110, max: 165 },
+    { min: 130, max: 195 },
+    { min: 155, max: 230 },
+    { min: 180, max: 265 },
+    { min: 210, max: 310 },
+    { min: 240, max: 360 },
+  ];
+  return bands[cat - 1];
+};

@@ -1,6 +1,7 @@
 import { supabase } from './supabaseClient';
 import { uploadLeadPhotos } from './leadPhotoService';
 import { notifyPartnerNewLead } from './partnerNotificationService';
+import { LEAD_RESPONSE_SLA_SECONDS } from './leadSla';
 
 /** Demo shop seeded in migration — fallback when RLS/network blocks listing. */
 export const DEMO_BODYSHOP_ID = '550e8400-e29b-41d4-a716-446655440001';
@@ -37,7 +38,7 @@ export interface BodyshopSummary {
   region?: string;
 }
 
-const RESPONSE_DEADLINE_SECONDS = 300;
+const RESPONSE_DEADLINE_SECONDS = LEAD_RESPONSE_SLA_SECONDS;
 
 const fallbackShop = (): BodyshopSummary[] => [{
   id: DEMO_BODYSHOP_ID,

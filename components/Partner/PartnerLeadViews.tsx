@@ -387,7 +387,12 @@ export const PartnerLeadTable: React.FC<PartnerLeadTableProps> = ({
 
 const WEEKDAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 
-export const PartnerBookingCalendar: React.FC<{ leads: PartnerLead[] }> = ({ leads }) => {
+export const PartnerBookingCalendar: React.FC<{
+  leads: PartnerLead[];
+  selectedLeadId?: string | null;
+  onSelectLead?: (lead: PartnerLead) => void;
+  onPreview?: (url: string, alt: string) => void;
+}> = ({ leads, selectedLeadId, onSelectLead, onPreview }) => {
   const [cursor, setCursor] = useState(() => {
     const now = new Date();
     return new Date(now.getFullYear(), now.getMonth(), 1);
@@ -446,10 +451,19 @@ export const PartnerBookingCalendar: React.FC<{ leads: PartnerLead[] }> = ({ lea
               <p className="text-xs font-bold text-[#111827]">{cell.day}</p>
               <div className="mt-1 space-y-1">
                 {dayLeads.slice(0, 2).map((lead) => (
-                  <div key={lead.id} className="rounded-md bg-white/90 px-1.5 py-1 text-[10px] leading-tight text-[#166534] shadow-sm">
+                  <button
+                    key={lead.id}
+                    type="button"
+                    onClick={() => onSelectLead?.(lead)}
+                    className={`w-full rounded-md px-1.5 py-1 text-left text-[10px] leading-tight shadow-sm transition hover:ring-2 hover:ring-[#4f46e5]/40 ${
+                      selectedLeadId === lead.id
+                        ? 'bg-[#eef2ff] text-[#4338ca] ring-2 ring-[#4f46e5]'
+                        : 'bg-white/90 text-[#166534]'
+                    }`}
+                  >
                     <p className="font-semibold truncate">{lead.customerRef}</p>
                     <p className="truncate">{lead.preferredTime || formatClock(lead.bookedAt || lead.createdAt)}</p>
-                  </div>
+                  </button>
                 ))}
                 {dayLeads.length > 2 ? (
                   <p className="text-[10px] font-semibold text-[#64748b]">+{dayLeads.length - 2} more</p>
@@ -468,8 +482,10 @@ export const PartnerJobTaskList: React.FC<{
   leads: PartnerLead[];
   onComplete: (lead: PartnerLead) => void;
   onPreview?: (url: string, alt: string) => void;
+  onSelectLead?: (lead: PartnerLead) => void;
+  selectedLeadId?: string | null;
   emptyMessage?: string;
-}> = ({ leads, onComplete, onPreview, emptyMessage }) => {
+}> = ({ leads, onComplete, onPreview, onSelectLead, selectedLeadId, emptyMessage }) => {
   if (!leads.length) {
     return (
       <div className="rounded-2xl border border-dashed border-[#d7dff5] bg-[#f8fbff] px-6 py-10 text-center">
@@ -486,7 +502,9 @@ export const PartnerJobTaskList: React.FC<{
         return (
           <div
             key={lead.id}
-            className="group flex flex-wrap items-center gap-3 rounded-xl border border-[#e5eaf8] bg-white px-4 py-3 shadow-sm transition hover:border-[#c7d2fe] hover:shadow-md"
+            className={`group flex flex-wrap items-center gap-3 rounded-xl border bg-white px-4 py-3 shadow-sm transition hover:shadow-md ${
+              selectedLeadId === lead.id ? 'border-[#4f46e5] ring-2 ring-[#4f46e5]/20' : 'border-[#e5eaf8] hover:border-[#c7d2fe]'
+            }`}
           >
             <button
               type="button"
@@ -495,7 +513,11 @@ export const PartnerJobTaskList: React.FC<{
             >
               {lead.photoUrl ? <img src={lead.photoUrl} alt="" className="h-full w-full object-cover" /> : null}
             </button>
-            <div className="min-w-0 flex-1">
+            <button
+              type="button"
+              onClick={() => onSelectLead?.(lead)}
+              className="min-w-0 flex-1 text-left"
+            >
               <div className="flex flex-wrap items-center gap-2">
                 <p className="font-semibold text-[#111827]">{lead.customerRef}</p>
                 <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-emerald-700">Booked</span>
@@ -507,7 +529,8 @@ export const PartnerJobTaskList: React.FC<{
               <p className="mt-0.5 text-xs text-[#94a3b8]">
                 Job ${jobValue} · platform fee ${fee} (10%) after you confirm completion
               </p>
-            </div>
+              <p className="mt-1 text-xs font-semibold text-[#4f46e5]">View full job →</p>
+            </button>
             <button
               type="button"
               onClick={() => onComplete(lead)}

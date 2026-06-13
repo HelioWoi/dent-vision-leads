@@ -4,7 +4,7 @@ import DarkFooter from '../DarkFooter';
 import { analyzeDents, identifyPanelsFromImages } from '../../services/geminiServiceAdapter';
 import { VehicleType, MaterialType, LightingType, PanelType } from '../../types';
 import { detectHailDamage } from '../../services/hailAnalysisService';
-import { priceForCategory } from '../../supabase/functions/_shared/pricing.ts';
+import { priceForCategory, paintTouchUpForCategory } from '../../supabase/functions/_shared/pricing.ts';
 import {
   DamageRegion,
   allRegionsToPolygons,
@@ -501,6 +501,8 @@ const EstimateAnalysis: React.FC = () => {
       );
       const estMin = breakdownCostSum.min > 0 ? breakdownCostSum.min : (aiTotal.min || 0);
       const estMax = breakdownCostSum.max > 0 ? breakdownCostSum.max : (aiTotal.max || 0);
+      const categoryForPaint = resolvedCat >= 1 ? resolvedCat : 3;
+      const paintBand = paintRepairNeeded ? paintTouchUpForCategory(categoryForPaint) : null;
 
       // HONESTY RULE: failed/unpriced analysis routes to inspection — never a fake price.
       const analysisFailed = (analysis as any)._source === 'fallback' || estMin <= 0 || estMax <= 0;
@@ -528,6 +530,10 @@ const EstimateAnalysis: React.FC = () => {
         estimateMax: estMax,
         pdrEstimateMin: estMin,
         pdrEstimateMax: estMax,
+        paintEstimateMin: paintBand?.min,
+        paintEstimateMax: paintBand?.max,
+        combinedEstimateMin: paintBand ? estMin + paintBand.min : estMin,
+        combinedEstimateMax: paintBand ? estMax + paintBand.max : estMax,
         confidence: analysis.summary.confidence_overall,
         dents: dentCount,
         scratches: analysis.summary.total_scratches,
@@ -1110,7 +1116,7 @@ const EstimateAnalysis: React.FC = () => {
             <div className="text-center mb-4">
               <p className="text-xs font-black uppercase tracking-[0.14em] text-[#4f46e5] mb-1">Sending request to shops</p>
               <h1 className="text-2xl md:text-[42px] md:leading-[1.05] font-extrabold text-[#101828]">Your request was sent to {primaryShop}</h1>
-              <p className="text-sm text-[#6b7280] mt-1.5">The shop has 5 minutes to review your photos and prepare a quote.</p>
+              <p className="text-sm text-[#6b7280] mt-1.5">The shop has 3 minutes to review your photos and prepare a quote.</p>
               {dispatchError && (
                 <p className="text-sm text-red-600 mt-2 font-medium">{dispatchError}</p>
               )}
