@@ -3,6 +3,7 @@ import EstimateHeader from './EstimateHeader';
 import FlowLegalFooter from './FlowLegalFooter';
 import EstimateConsentModal from './EstimateConsentModal';
 import DarkFooter from '../DarkFooter';
+import { verifyLeadAssignment, LeadAssignmentVerification } from '../../services/leadAssignmentService';
 
 interface EstimateData {
   damageType: string;
@@ -157,6 +158,7 @@ const EstimateResults: React.FC = () => {
   const [photoUrls, setPhotoUrls] = useState<string[]>([]);
   const [showConsentModal, setShowConsentModal] = useState(false);
   const [fallbackScenario, setFallbackScenario] = useState<FallbackScenario | null>(null);
+  const [bookingGate, setBookingGate] = useState<LeadAssignmentVerification | null>(null);
 
   useEffect(() => {
     const forcedByHash = readScenarioFromHash();
@@ -217,6 +219,33 @@ const EstimateResults: React.FC = () => {
     }
   }, []);
 
+  useEffect(() => {
+    const leadId = sessionStorage.getItem('dispatchedLeadId');
+    const bodyshopId = sessionStorage.getItem('dispatchedBodyshopId') || DEMO_BODYSHOP_ID;
+    if (!leadId) {
+      setBookingGate({ assigned: false, canBook: false });
+      return;
+    }
+
+    let cancelled = false;
+    let intervalId = 0;
+
+    const refresh = async () => {
+      const result = await verifyLeadAssignment(leadId, bodyshopId);
+      if (cancelled) return;
+      setBookingGate(result);
+      if (result.canBook && intervalId) window.clearInterval(intervalId);
+    };
+
+    void refresh();
+    intervalId = window.setInterval(() => { void refresh(); }, 5000);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+    };
+  }, []);
+
   if (!data) return (
     <div className="min-h-screen" style={{ background: '#eef2f8' }}>
       <div className="min-h-[70vh] flex items-center justify-center px-4">
@@ -271,11 +300,12 @@ const EstimateResults: React.FC = () => {
 
   const handleAcceptConsent = () => {
     sessionStorage.setItem('estimateConsentAccepted', 'true');
+    const dispatchedShopId = sessionStorage.getItem('dispatchedBodyshopId') || best?.id || DEMO_BODYSHOP_ID;
     sessionStorage.setItem(
       'bookingTargetShop',
       JSON.stringify({
-        id: best?.id || DEMO_BODYSHOP_ID,
-        name: best?.name || 'Best Match Bodyshop',
+        id: dispatchedShopId,
+        name: best?.name || 'Sunshine Coast PDR Co.',
         price: best?.price || aiMid,
       })
     );
@@ -856,11 +886,22 @@ const EstimateResults: React.FC = () => {
                 ))}
                 <button
                   onClick={handleBookNow}
-                  className="w-full mt-4 py-3 rounded-full font-bold text-white text-sm"
+                  disabled={bookingGate !== null && !bookingGate.canBook}
+                  className="w-full mt-4 py-3 rounded-full font-bold text-white text-sm disabled:opacity-60 disabled:cursor-not-allowed"
                   style={{ background: 'linear-gradient(90deg, #5b5dfd 0%, #f19a48 100%)' }}
                 >
-                  📅 Book This Shop
+                  {bookingGate?.canBook
+                    ? '📅 Book This Shop'
+                    : bookingGate?.assigned
+                      ? '⏳ Waiting for shop quote…'
+                      : '📅 Book This Shop'}
                 </button>
+                {bookingGate && !bookingGate.canBook && bookingGate.assigned ? (
+                  <p className="mt-2 text-center text-[11px] text-amber-800">
+                    {bookingGate.bodyshopName || 'The bodyshop'} needs to send a quote before booking opens
+                    {bookingGate.matchStatus ? ` (status: ${bookingGate.matchStatus})` : ''}.
+                  </p>
+                ) : null}
                 <button className="w-full mt-2 py-2.5 rounded-full font-semibold text-[#111827] text-sm border-2 border-gray-200 hover:border-[#4f46e5] transition-colors">
                   📋 View All {TOTAL_SHOPS} Quotes
                 </button>

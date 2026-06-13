@@ -111,13 +111,31 @@ const BookingForm: React.FC = () => {
       setAssignmentLoading(false);
       return;
     }
-    setAssignmentLoading(true);
-    verifyLeadAssignment(existingLeadId, bodyshopId).then((result) => {
-      if (cancelled) return;
+
+    let intervalId = 0;
+
+    const refreshAssignment = async () => {
+      const result = await verifyLeadAssignment(existingLeadId, bodyshopId);
+      if (cancelled) return result;
       setAssignment(result);
       setAssignmentLoading(false);
-    });
-    return () => { cancelled = true; };
+      if (result.canBook && intervalId) {
+        window.clearInterval(intervalId);
+      }
+      return result;
+    };
+
+    setAssignmentLoading(true);
+    void refreshAssignment();
+
+    intervalId = window.setInterval(() => {
+      void refreshAssignment();
+    }, 5000);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+    };
   }, [bodyshopId, existingLeadId]);
 
   useEffect(() => {
@@ -180,6 +198,43 @@ const BookingForm: React.FC = () => {
   const isEmailValid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(customerEmail.trim());
   const isPhoneValid = customerPhone.trim().length >= 8;
   const canSubmit = customerName.trim().length >= 2 && isEmailValid && isPhoneValid && rego.trim().length >= 2 && postalCode.trim().length >= 3 && preferredDate && preferredTime && agreeLiability && assignment?.canBook;
+
+  const submitBlockers = useMemo(() => {
+    const items: string[] = [];
+    if (assignmentLoading) {
+      items.push('Verifying shop assignment…');
+      return items;
+    }
+    if (!existingLeadId) {
+      items.push('Complete the estimate flow first so we can link your lead.');
+    } else if (!assignment?.assigned) {
+      items.push('We could not verify your lead — try running a new estimate.');
+    } else if (!assignment.canBook) {
+      items.push(`Waiting for ${assignment.bodyshopName || 'the bodyshop'} to send a quote (current status: ${assignment.matchStatus || 'new'}).`);
+    }
+    if (customerName.trim().length < 2) items.push('Enter your full name.');
+    if (!isEmailValid) items.push('Enter a valid email.');
+    if (!isPhoneValid) items.push('Enter a phone number (min. 8 digits).');
+    if (rego.trim().length < 2) items.push('Enter your vehicle REGO.');
+    if (postalCode.trim().length < 3) items.push('Enter your postal code.');
+    if (!preferredDate || !preferredTime) items.push('Choose a preferred date and time.');
+    if (!agreeLiability) items.push('Accept the liability checkbox below.');
+    return items;
+  }, [
+    agreeLiability,
+    assignment,
+    assignmentLoading,
+    customerName,
+    customerEmail,
+    customerPhone,
+    existingLeadId,
+    isEmailValid,
+    isPhoneValid,
+    postalCode,
+    preferredDate,
+    preferredTime,
+    rego,
+  ]);
 
   const panelBreakdown = estimate?.panelBreakdownData ?? [];
   const hasPanelBreakdown = panelBreakdown.length > 1;
@@ -547,8 +602,20 @@ const BookingForm: React.FC = () => {
               className="mt-5 w-full rounded-full py-3 text-sm font-semibold text-white transition disabled:opacity-50 disabled:cursor-not-allowed"
               style={{ background: 'linear-gradient(90deg, #5b5dfd 0%, #b667d4 48%, #f19a48 100%)' }}
             >
-              {submitting ? 'Submitting booking...' : 'Submit booking request'}
+              {submitting
+                ? 'Submitting booking...'
+                : assignment?.canBook
+                  ? 'Submit booking request'
+                  : 'Waiting for shop quote…'}
             </button>
+
+            {!canSubmit && submitBlockers.length > 0 && !submitting ? (
+              <ul className="mt-3 space-y-1 rounded-xl border border-[#e5eaf8] bg-[#f8fbff] px-3 py-2 text-[11px] text-[#64748b]">
+                {submitBlockers.map((item) => (
+                  <li key={item}>• {item}</li>
+                ))}
+              </ul>
+            ) : null}
 
             <p className="mt-3 text-center text-[11px] text-[#9ca3af]">Your details are secured and shared only with the selected bodyshop.</p>
           </form>
