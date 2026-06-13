@@ -84,7 +84,7 @@ Deno.serve(async (req) => {
       }
     }
 
-    const [shopRes, settingsRes, latestMatchRes] = await Promise.all([
+    const [shopRes, settingsRes, newMatchRes, anyMatchRes] = await Promise.all([
       supabase.from('bodyshops').select('business_name, region, phone').eq('id', payload.bodyshopId).maybeSingle(),
       supabase.from('notification_settings').select('*').eq('bodyshop_id', payload.bodyshopId).maybeSingle(),
       supabase
@@ -95,11 +95,19 @@ Deno.serve(async (req) => {
         .order('created_at', { ascending: false })
         .limit(1)
         .maybeSingle(),
+      supabase
+        .from('shop_lead_matches')
+        .select('id, lead_id')
+        .eq('bodyshop_id', payload.bodyshopId)
+        .in('status', ['new', 'quoted', 'inspection'])
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle(),
     ]);
 
     const shop = shopRes.data;
     const settings = settingsRes.data;
-    const latestMatch = latestMatchRes.data;
+    const latestMatch = newMatchRes.data || anyMatchRes.data;
     const targetPhone =
       payload.phone?.trim() ||
       settings?.whatsapp_phone ||

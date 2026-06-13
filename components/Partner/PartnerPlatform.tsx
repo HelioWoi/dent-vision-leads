@@ -739,6 +739,15 @@ const PartnerPlatform: React.FC<PartnerPlatformProps> = ({ route }) => {
       return;
     }
 
+    if (result.ok && result.sent === false) {
+      const parts = [
+        result.reason || result.message || 'WhatsApp test could not be delivered.',
+        result.hint,
+      ].filter(Boolean);
+      setNotificationFeedback(parts.join(' '));
+      return;
+    }
+
     const parts = [
       result.error || result.reason || 'WhatsApp test failed.',
       result.hint,

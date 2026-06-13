@@ -1,4 +1,5 @@
 import { supabase } from './supabaseClient';
+import { resolveSupabaseUrl } from './supabaseClient';
 
 export const DEFAULT_WHATSAPP_MESSAGE_TEMPLATE = `Dent Vision — new lead in {{region}}
 {{damage}} · {{estimate}}
@@ -30,12 +31,7 @@ export interface TestWhatsAppResult {
   error?: string;
 }
 
-const edgeBaseUrl = () => {
-  const envBag = (import.meta as any).env || {};
-  return envBag.VITE_SUPABASE_URL
-    ? `${envBag.VITE_SUPABASE_URL}/functions/v1`
-    : 'http://127.0.0.1:54321/functions/v1';
-};
+const edgeBaseUrl = () => `${resolveSupabaseUrl()}/functions/v1`;
 
 export const buildPartnerLeadRespondUrl = (token: string) => {
   const origin = typeof window !== 'undefined' ? window.location.origin : '';
