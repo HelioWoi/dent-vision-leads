@@ -23,6 +23,7 @@ import SettingsPage from './pages/SettingsPage';
 import { AdminActionApi } from './AdminTypes';
 import { NAV_ITEMS, ParsedAdminRoute, parseAdminRoute } from './adminUi';
 import LeadDetailPage from './pages/LeadDetailPage';
+import { supabase } from '../../services/supabaseClient';
 
 type AdminPlatformProps = {
   route: string;
@@ -48,6 +49,14 @@ const AdminPlatform: React.FC<AdminPlatformProps> = ({ route }) => {
     setIdentity(next);
     setIdentityLoading(false);
     return next;
+  };
+
+  const handleSignOut = async () => {
+    setIdentity(initialIdentity);
+    setData(createInitialAdminData());
+    setIdentityLoading(false);
+    await signOutAdmin();
+    window.location.hash = '#/admin/login';
   };
 
   const refreshData = async () => {
@@ -77,7 +86,11 @@ const AdminPlatform: React.FC<AdminPlatformProps> = ({ route }) => {
     }
 
     if (parsedRoute.isLogin && identity.isAuthenticated && identity.isAdmin) {
-      window.location.hash = '#/admin/dashboard';
+      void supabase.auth.getSession().then(({ data: { session } }) => {
+        if (session?.user) {
+          window.location.hash = '#/admin/dashboard';
+        }
+      });
     }
   }, [parsedRoute, identityLoading, identity]);
 
@@ -264,10 +277,7 @@ const AdminPlatform: React.FC<AdminPlatformProps> = ({ route }) => {
           <div className="mt-4 flex gap-2">
             <button
               type="button"
-              onClick={async () => {
-                await signOutAdmin();
-                window.location.hash = '#/admin/login';
-              }}
+              onClick={() => void handleSignOut()}
               className="rounded-lg bg-[#273548] px-4 py-2 text-sm font-semibold text-white"
             >
               Sign out
@@ -313,10 +323,7 @@ const AdminPlatform: React.FC<AdminPlatformProps> = ({ route }) => {
             <p className="mt-1 break-all">{identity.email}</p>
             <button
               type="button"
-              onClick={async () => {
-                await signOutAdmin();
-                window.location.hash = '#/admin/login';
-              }}
+              onClick={() => void handleSignOut()}
               className="mt-3 rounded-lg bg-white px-3 py-1.5 font-semibold text-[#273548]"
             >
               Sign Out

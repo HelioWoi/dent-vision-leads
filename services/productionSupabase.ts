@@ -3,6 +3,8 @@ export const PRODUCTION_SUPABASE_URL = 'https://wtfstakxspbnghalelby.supabase.co
 export const PRODUCTION_SUPABASE_ANON_KEY =
   'sb_publishable__wJbeP572k2UJRHnLM16eA_4hBHTY46';
 
+export const PRODUCTION_APP_URL = 'https://dentvision-ai-lead.netlify.app';
+
 export const isProductionHost = () => {
   if (typeof window === 'undefined') return false;
   const host = window.location.hostname;

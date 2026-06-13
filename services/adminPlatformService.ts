@@ -797,7 +797,10 @@ export const signInAdmin = async (email: string, password: string): Promise<Admi
 };
 
 export const signOutAdmin = async () => {
-  await supabase.auth.signOut();
+  const { error } = await supabase.auth.signOut({ scope: 'global' });
+  if (error) {
+    throw new Error(error.message);
+  }
 };
 
 export const loadAdminDataBundle = async (): Promise<AdminDataBundle> => {

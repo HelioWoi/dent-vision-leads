@@ -792,7 +792,10 @@ export const signUpPartner = async (email: string, password: string, ownerName?:
 };
 
 export const signOutPartner = async () => {
-  await supabase.auth.signOut();
+  const { error } = await supabase.auth.signOut({ scope: 'global' });
+  if (error) {
+    throw new Error(error.message);
+  }
 };
 
 export const loadPartnerDataBundle = async (identity: PartnerIdentity): Promise<PartnerDataBundle> => {

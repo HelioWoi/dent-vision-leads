@@ -20,6 +20,7 @@ import { uploadBodyshopLogo } from '../../services/bodyshopProfileService';
 import { registerPartnerPush, isPushSupported } from '../../services/partnerPushService';
 import { DEFAULT_WHATSAPP_MESSAGE_TEMPLATE, testPartnerWhatsApp } from '../../services/partnerNotificationService';
 import { playLeadAlertSound, setPartnerSoundEnabled } from '../../services/notificationSound';
+import { supabase } from '../../services/supabaseClient';
 import { PartnerAvailabilityEditor } from './PartnerAvailabilityEditor';
 import {
   fetchPartnerAvailability,
@@ -382,6 +383,14 @@ const PartnerPlatform: React.FC<PartnerPlatformProps> = ({ route }) => {
     return next;
   };
 
+  const handleSignOut = async () => {
+    setIdentity(initialIdentity);
+    setData(getDefaultBundle());
+    setIdentityLoading(false);
+    await signOutPartner();
+    window.location.hash = '#/partner/login';
+  };
+
   const refreshData = async (currentIdentity?: PartnerIdentity) => {
     const activeIdentity = currentIdentity || identity;
     if (!activeIdentity.isPartner) return;
@@ -455,7 +464,11 @@ const PartnerPlatform: React.FC<PartnerPlatformProps> = ({ route }) => {
     }
 
     if (parsedRoute.isLogin && identity.isAuthenticated && identity.isPartner) {
-      window.location.hash = '#/partner/dashboard';
+      void supabase.auth.getSession().then(({ data: { session } }) => {
+        if (session?.user) {
+          window.location.hash = '#/partner/dashboard';
+        }
+      });
     }
   }, [parsedRoute, identityLoading, identity]);
 
@@ -1753,10 +1766,7 @@ const PartnerPlatform: React.FC<PartnerPlatformProps> = ({ route }) => {
           <div className="mt-4 flex gap-2">
             <button
               type="button"
-              onClick={async () => {
-                await signOutPartner();
-                window.location.hash = '#/partner/login';
-              }}
+              onClick={() => void handleSignOut()}
               className="rounded-lg bg-[#273548] px-4 py-2 text-sm font-semibold text-white"
             >
               Sign out
@@ -1829,10 +1839,7 @@ const PartnerPlatform: React.FC<PartnerPlatformProps> = ({ route }) => {
             </div>
             <button
               type="button"
-              onClick={async () => {
-                await signOutPartner();
-                window.location.hash = '#/partner/login';
-              }}
+              onClick={() => void handleSignOut()}
               className="mt-2 w-full rounded-xl border border-white/15 py-2 text-xs font-semibold text-[#dce5f9]"
             >
               Log out
